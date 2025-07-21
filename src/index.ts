@@ -1,6 +1,6 @@
 // Entry point for the Express server
 import dotenv from "dotenv";
-import app from "./src/config/app";
+import app from "./config/app";
 
 dotenv.config();
 
