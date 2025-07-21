@@ -5,13 +5,27 @@ import { emitRoomEvent } from "../webhooks/roomWebhooks";
 
 const rooms: Map<string, Room> = new Map();
 const roomCodeToId: Map<string, string> = new Map();
+// Track socketId -> { roomId, userId }
+const socketToUser: Map<string, { roomId: string; userId: string }> = new Map();
+
+/**
+ * Register a socket connection to a user and room after REST join.
+ */
+export function registerSocketUser(
+    socketId: string,
+    roomId: string,
+    userId: string
+): void {
+    socketToUser.set(socketId, { roomId, userId });
+}
 
 export function createRoom(
     roomName: string,
-    userName: string
+    userName: string,
+    userId?: string
 ): { room: Room; user: User } {
     const user: User = {
-        id: uuidv4(),
+        id: userId || uuidv4(),
         name: userName,
     };
 
@@ -34,27 +48,72 @@ export function createRoom(
 
 export function joinRoom(
     roomCode: string,
-    userName: string
+    userName: string,
+    userId?: string
 ): { room: Room; user: User } {
     const roomId = roomCodeToId.get(roomCode);
     const room = roomId ? rooms.get(roomId) : undefined;
     if (!room) throw new Error("Room not found");
     if (room.state !== "lobby")
         throw new Error("Cannot join: game already started");
-    if (room.users.find((u) => u.name === userName))
-        throw new Error("User already in room");
+    const existingUser = room.users.find((u) => u.id === userId);
+    if (existingUser) {
+        console.log(`User ${userName} already in room ${room.id}`);
+
+        return { room, user: existingUser };
+    }
 
     const user: User = {
-        id: uuidv4(),
+        id: userId || uuidv4(),
         name: userName,
     };
 
     room.users.push(user);
     room.readyStates[user.id] = false;
-    emitRoomEvent(room, "user_joined");
+    emitRoomEvent<{ userName: string }>(room, "user_joined", {
+        userName: user.name,
+    });
     return { room, user };
 }
 
 export function getRoom(roomId: string): Room | undefined {
     return rooms.get(roomId);
+}
+
+/**
+ * Cleanup logic for when a socket disconnects.
+ * Removes the user from their room, emits event, and deletes room if empty.
+ */
+export function handleUserDisconnect(socketId: string): void {
+    const mapping = socketToUser.get(socketId);
+    if (!mapping) return;
+    const { roomId, userId } = mapping;
+    const room = rooms.get(roomId);
+    if (!room) {
+        socketToUser.delete(socketId);
+        return;
+    }
+
+    // Find username before removal
+    const userLeaving = room.users.find((u) => u.id === userId);
+    const userName = userLeaving ? userLeaving.name : undefined;
+    // Remove user from room
+    room.users = room.users.filter((u) => u.id !== userId);
+    delete room.readyStates[userId];
+    // If user was leader, assign new leader if possible
+    if (room.leaderId === userId && room.users.length > 0) {
+        room.leaderId = room.users[0].id;
+    }
+    // Emit event with username
+    emitRoomEvent<{ userName?: string }>(room, "user_left", { userName });
+    // If room is empty, delete it
+    if (room.users.length === 0) {
+        if (process.env.NODE_ENV !== "dev") {
+            rooms.delete(roomId);
+            roomCodeToId.forEach((id, code) => {
+                if (id === roomId) roomCodeToId.delete(code);
+            });
+        }
+    }
+    socketToUser.delete(socketId);
 }
