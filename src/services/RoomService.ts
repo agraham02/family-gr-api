@@ -4,16 +4,15 @@ import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
 
 const rooms: Map<string, Room> = new Map();
+const roomCodeToId: Map<string, string> = new Map();
 
 export function createRoom(
     roomName: string,
-    userName: string,
-    webhookUrl: string
+    userName: string
 ): { room: Room; user: User } {
     const user: User = {
         id: uuidv4(),
         name: userName,
-        webhookUrl,
     };
 
     const room: Room = {
@@ -28,16 +27,17 @@ export function createRoom(
     };
 
     rooms.set(room.id, room);
+    roomCodeToId.set(room.code, room.id);
     emitRoomEvent(room, "room_created");
     return { room, user };
 }
 
 export function joinRoom(
     roomCode: string,
-    userName: string,
-    webhookUrl: string
+    userName: string
 ): { room: Room; user: User } {
-    const room = Array.from(rooms.values()).find((r) => r.code === roomCode);
+    const roomId = roomCodeToId.get(roomCode);
+    const room = roomId ? rooms.get(roomId) : undefined;
     if (!room) throw new Error("Room not found");
     if (room.state !== "lobby")
         throw new Error("Cannot join: game already started");
@@ -47,7 +47,6 @@ export function joinRoom(
     const user: User = {
         id: uuidv4(),
         name: userName,
-        webhookUrl,
     };
 
     room.users.push(user);
