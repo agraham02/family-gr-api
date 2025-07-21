@@ -7,9 +7,9 @@ export function setSocketServer(server: SocketIOServer) {
     io = server;
 }
 
-export interface RoomEventPayload extends Omit<Room, "users"> {
+export interface RoomEventPayload {
     event: string;
-    users: Pick<Room["users"][number], "id" | "name">[];
+    roomState: Room;
     timestamp: string;
 }
 
@@ -17,17 +17,7 @@ export function emitRoomEvent(room: Room, event: string): void {
     if (!io) return;
     const payload: RoomEventPayload = {
         event,
-        id: room.id,
-        code: room.code,
-        name: room.name,
-        users: room.users.map((u) => ({
-            id: u.id,
-            name: u.name,
-        })),
-        leaderId: room.leaderId,
-        readyStates: room.readyStates,
-        state: room.state,
-        createdAt: room.createdAt,
+        roomState: room,
         timestamp: new Date().toISOString(),
     };
     io.to(room.id).emit("room_event", payload);
