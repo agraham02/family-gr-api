@@ -7,11 +7,11 @@ import { setSocketServer } from "./webhooks/roomWebhooks";
 
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
 function startServer() {
     const httpServer = createServer(app);
-    
+
     const io = new SocketIOServer(httpServer, {
         cors: {
             origin: "*",
