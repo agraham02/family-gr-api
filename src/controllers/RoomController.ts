@@ -14,7 +14,11 @@ export async function createRoom(
             throw err;
         }
         const { room, user } = RoomService.createRoom(roomName, userName);
-        res.status(201).json({ roomId: room.id, userId: user.id });
+        res.status(201).json({
+            roomId: room.id,
+            userId: user.id,
+            roomCode: room.code,
+        });
     } catch (err) {
         next(err);
     }
@@ -26,15 +30,19 @@ export async function joinRoom(
     next: NextFunction
 ) {
     try {
-        const { userName, roomCode } = req.body;
+        const { userName, roomCode, userId } = req.body;
         if (!userName || !roomCode) {
             const err = new Error("userName and roomCode are required");
             (err as any).status = 400;
             throw err;
         }
 
-        const { room, user } = RoomService.joinRoom(roomCode, userName);
-        res.status(200).json({ roomId: room.id, userId: user.id });
+        const { room, user } = RoomService.joinRoom(roomCode, userName, userId);
+        res.status(200).json({
+            roomId: room.id,
+            userId: user.id,
+            roomCode: room.code,
+        });
     } catch (err) {
         next(err);
     }
