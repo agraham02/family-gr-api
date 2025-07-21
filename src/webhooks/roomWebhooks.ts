@@ -7,18 +7,23 @@ export function setSocketServer(server: SocketIOServer) {
     io = server;
 }
 
-export interface RoomEventPayload {
+export type RoomEventPayload<T = {}> = {
     event: string;
     roomState: Room;
     timestamp: string;
-}
+} & T;
 
-export function emitRoomEvent(room: Room, event: string): void {
+export function emitRoomEvent<T = {}>(
+    room: Room,
+    event: string,
+    customData?: T
+): void {
     if (!io) return;
     const payload: RoomEventPayload = {
         event,
         roomState: room,
         timestamp: new Date().toISOString(),
+        ...(customData || {}),
     };
     io.to(room.id).emit("room_event", payload);
 }
