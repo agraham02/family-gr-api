@@ -33,11 +33,11 @@ export function createRoom(
 }
 
 export function joinRoom(
-    roomId: string,
+    roomCode: string,
     userName: string,
     webhookUrl: string
 ): { room: Room; user: User } {
-    const room = rooms.get(roomId);
+    const room = Array.from(rooms.values()).find((r) => r.code === roomCode);
     if (!room) throw new Error("Room not found");
     if (room.state !== "lobby")
         throw new Error("Cannot join: game already started");

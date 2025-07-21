@@ -31,14 +31,14 @@ export async function joinRoom(
 ) {
     try {
         const { userName, webhookUrl } = req.body;
-        const { roomId } = req.params;
+        const { roomCode } = req.params;
         if (!userName || !webhookUrl) {
             return res
                 .status(400)
                 .json({ error: "userName and webhookUrl are required" });
         }
         const { room, user } = RoomService.joinRoom(
-            roomId,
+            roomCode,
             userName,
             webhookUrl
         );
