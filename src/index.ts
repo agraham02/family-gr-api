@@ -11,14 +11,20 @@ import {
     kickUser,
     promoteLeader,
     registerSocketUser,
+    selectGame,
     setReadyState,
     startGame,
     toggleReadyState,
 } from "./services/RoomService";
+import { GameAction, gameManager } from "./services/GameManager";
+import { spadesModule } from "./games/spades";
+import { emitGameEvent, setGameSocketServer } from "./webhooks/gameWebhooks";
 
 dotenv.config();
 
 const PORT = process.env.PORT || 4000;
+
+gameManager.registerGameModule("spades", spadesModule);
 
 function handleSocketError(socket: Socket, err: any) {
     console.error(err);
@@ -37,6 +43,7 @@ function startServer() {
     });
 
     setSocketServer(io);
+    setGameSocketServer(io);
 
     io.on("connection", (socket) => {
         // Client should join a room by roomId after connecting
@@ -63,6 +70,26 @@ function startServer() {
             }
         });
 
+        socket.on("join_game", ({ roomId, userId }) => {
+            try {
+                if (!roomId || !userId) {
+                    throw new Error(
+                        `join_game missing roomId or userId for socket ${socket.id}`
+                    );
+                }
+                // registerSocketUser(socket.id, roomId, userId);
+                // socket.join(roomId);
+                const room = getRoom(roomId);
+                if (!room) {
+                    throw new Error(
+                        `Room with ID ${roomId} not found for socket ${socket.id}`
+                    );
+                }
+                emitGameEvent(room, "sync");
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
         socket.on("toggle_ready", ({ roomId, userId }) => {
             try {
                 toggleReadyState(roomId, userId);
@@ -78,6 +105,15 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
+
+        socket.on("select_game", ({ roomId, userId, gameType }) => {
+            try {
+                selectGame(roomId, userId, gameType);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
         socket.on("kick_user", ({ roomId, userId, targetUserId }) => {
             try {
                 kickUser(roomId, userId, targetUserId);
@@ -85,13 +121,31 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
-        socket.on("start_game", ({ roomId, userId }) => {
+        socket.on("start_game", ({ roomId, userId, gameType }) => {
             try {
-                startGame(roomId, userId);
+                startGame(roomId, userId, gameType);
             } catch (err) {
                 handleSocketError(socket, err);
             }
         });
+
+        socket.on(
+            "game_action",
+            ({ roomId, action }: { roomId: string; action: GameAction }) => {
+                try {
+                    const room = getRoom(roomId);
+                    if (!room) {
+                        throw new Error(`Room with ID ${roomId} not found`);
+                    }
+                    const gameId = room.gameId ?? null;
+                    gameManager.dispatch(gameId, action);
+                    emitGameEvent(room, "sync");
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
+
         socket.on("close_room", ({ roomId, userId }) => {
             try {
                 closeRoom(roomId, userId);
