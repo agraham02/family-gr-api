@@ -18,7 +18,11 @@ import {
 } from "./services/RoomService";
 import { GameAction, gameManager } from "./services/GameManager";
 import { spadesModule } from "./games/spades";
-import { emitGameEvent, setGameSocketServer } from "./webhooks/gameWebhooks";
+import {
+    emitGameEvent,
+    emitPlayerGameEvent,
+    setGameSocketServer,
+} from "./webhooks/gameWebhooks";
 
 dotenv.config();
 
@@ -70,15 +74,14 @@ function startServer() {
             }
         });
 
-        socket.on("join_game", ({ roomId, userId }) => {
+        socket.on("get_game_state", ({ roomId, userId }) => {
             try {
                 if (!roomId || !userId) {
                     throw new Error(
-                        `join_game missing roomId or userId for socket ${socket.id}`
+                        `get_game_state missing roomId or userId for socket ${socket.id}`
                     );
                 }
-                // registerSocketUser(socket.id, roomId, userId);
-                // socket.join(roomId);
+
                 const room = getRoom(roomId);
                 if (!room) {
                     throw new Error(
@@ -90,6 +93,20 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
+
+        socket.on("get_player_state", ({ roomId, userId }) => {
+            try {
+                const room = getRoom(roomId);
+                if (!room) {
+                    throw new Error(`Room with ID ${roomId} not found`);
+                }
+
+                emitPlayerGameEvent(socket, room, "player_sync", userId);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
         socket.on("toggle_ready", ({ roomId, userId }) => {
             try {
                 toggleReadyState(roomId, userId);
