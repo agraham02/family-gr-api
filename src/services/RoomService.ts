@@ -117,3 +117,97 @@ export function handleUserDisconnect(socketId: string): void {
     }
     socketToUser.delete(socketId);
 }
+
+export function setReadyState(
+    roomId: string,
+    userId: string,
+    ready: boolean
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (!room.users.find((u) => u.id === userId))
+        throw new Error("User not in room");
+
+    room.readyStates[userId] = ready;
+    emitRoomEvent<{ userId: string; ready: boolean }>(
+        room,
+        "user_ready_state_changed",
+        {
+            userId,
+            ready,
+        }
+    );
+}
+
+export function toggleReadyState(roomId: string, userId: string): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (!room.users.find((u) => u.id === userId))
+        throw new Error("User not in room");
+
+    room.readyStates[userId] = !room.readyStates[userId];
+    emitRoomEvent<{ userId: string; ready: boolean }>(
+        room,
+        "user_ready_state_changed",
+        {
+            userId,
+            ready: room.readyStates[userId],
+        }
+    );
+}
+
+export function promoteLeader(
+    roomId: string,
+    userId: string,
+    newLeaderId: string
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can promote a new leader");
+    if (!room.users.find((u) => u.id === newLeaderId))
+        throw new Error("New leader must be a participant in the room");
+
+    room.leaderId = newLeaderId;
+    emitRoomEvent<{ newLeaderId: string }>(room, "leader_promoted", {
+        newLeaderId,
+    });
+}
+export function kickUser(
+    roomId: string,
+    userId: string,
+    targetUserId: string
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can kick a user");
+    if (!room.users.find((u) => u.id === targetUserId))
+        throw new Error("User not found in room");
+
+    room.users = room.users.filter((u) => u.id !== targetUserId);
+    delete room.readyStates[targetUserId];
+    emitRoomEvent<{ userId: string }>(room, "user_kicked", {
+        userId: targetUserId,
+    });
+}
+
+export function startGame(roomId: string, userId: string): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can start the game");
+
+    room.state = "in-game";
+    emitRoomEvent(room, "game_started");
+}
+
+export function closeRoom(roomId: string, userId: string): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can close the room");
+
+    rooms.delete(roomId);
+    emitRoomEvent(room, "room_closed");
+}
