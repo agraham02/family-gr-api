@@ -5,6 +5,7 @@ import cors from "cors";
 import morgan from "morgan";
 import healthRoutes from "../routes/healthRoutes";
 import roomRoutes from "../routes/roomRoutes";
+import gameRoutes from "../routes/gameRoutes";
 import { errorHandler } from "../middleware/errorHandler";
 
 const app = express();
@@ -16,6 +17,7 @@ app.use(morgan("dev"));
 
 app.use(healthRoutes);
 app.use(roomRoutes);
+app.use(gameRoutes);
 
 app.use(errorHandler);
 
