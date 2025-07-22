@@ -48,5 +48,6 @@ This guide defines how GitHub Copilot should assist in generating code for this 
 - Don’t write large monolithic files. Break logic into individual modules/functions.
 - Don’t use arrow functions to define middleware, controllers, or top-level functions.
 - Don’t mix business logic with route definitions — use controllers or service layers.
+- Don't just be a yes man. Critique any flaws in my ideas and give me alternative solutions if necessary
 
 ---
