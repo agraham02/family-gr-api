@@ -2,6 +2,7 @@ import { Room } from "../models/Room";
 import { User } from "../models/User";
 import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
+import { gameManager } from "./GameManager";
 
 const rooms: Map<string, Room> = new Map();
 const roomCodeToId: Map<string, string> = new Map();
@@ -37,6 +38,8 @@ export function createRoom(
         leaderId: user.id,
         readyStates: { [user.id]: false },
         state: "lobby",
+        selectedGameType: "spades",
+        gameId: null,
         createdAt: new Date(),
     };
 
@@ -173,6 +176,27 @@ export function promoteLeader(
         newLeaderId,
     });
 }
+
+export function selectGame(
+    roomId: string,
+    userId: string,
+    gameType: string = "spades"
+) {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can select a game");
+
+    if (room.selectedGameType === gameType) {
+        // If the same game is selected, clear the selection
+        room.selectedGameType = "";
+    } else {
+        room.selectedGameType = gameType;
+    }
+
+    emitRoomEvent(room, "game_selected", { gameType });
+}
+
 export function kickUser(
     roomId: string,
     userId: string,
@@ -192,14 +216,25 @@ export function kickUser(
     });
 }
 
-export function startGame(roomId: string, userId: string): void {
+export function startGame(
+    roomId: string,
+    userId: string,
+    gameType: string = "spades",
+    customSettings?: any
+): void {
     const room = getRoom(roomId);
     if (!room) throw new Error("Room not found");
     if (room.leaderId !== userId)
         throw new Error("Only the current leader can start the game");
 
+    // Create game instance
+    const gameId = gameManager.createGame(gameType, room, customSettings);
     room.state = "in-game";
-    emitRoomEvent(room, "game_started");
+    room.gameId = gameId;
+
+    // Optionally, emit initial game state
+    const gameState = gameManager.getGame(gameId);
+    emitRoomEvent(room, "game_started", { gameId, gameState });
 }
 
 export function closeRoom(roomId: string, userId: string): void {
