@@ -8,5 +8,7 @@ export interface Room {
     leaderId: string;
     readyStates: Record<string, boolean>;
     state: "lobby" | "in-game" | "ended";
+    gameId: string | null;
+    selectedGameType: string;
     createdAt: Date;
 }
