@@ -84,8 +84,8 @@ function init(
         type: SPADES_NAME,
 
         players,
-        teams: {},
-        playOrder: [],
+        teams: {}, // To be filled with team data
+        playOrder: [], // To be filled with play order
         dealerIndex,
         currentTurnIndex: dealerIndex,
 
@@ -110,14 +110,10 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             return { ...state, hands: action.payload.hands, phase: "bidding" };
         case "PLACE_BID":
             // Example: handle bidding
-            return handlePlaceBid(
-                state,
-                action.payload.playerId,
-                action.payload.bid
-            );
+            return handlePlaceBid(state, action.userId, action.payload.bid);
         case "PLAY_CARD":
             // Example: handle playing a card
-            return { ...state };
+            return handlePlayCard(state, action.userId, action.payload.card);
         case "SCORE_ROUND":
             // Example: handle scoring
             return { ...state, phase: "scoring" };
@@ -130,10 +126,22 @@ function getState(state: SpadesState): Partial<SpadesState> {
     return omitFields(state, ["hands"]);
 }
 
+function getPlayerState(
+    state: SpadesState,
+    playerId: string
+): Partial<SpadesState> & { hand?: Card[] } {
+    const publicState = getState(state);
+    return {
+        // ...publicState,
+        hand: state.hands[playerId] || [],
+    };
+}
+
 export const spadesModule: GameModule = {
     init,
     reducer,
     getState,
+    getPlayerState,
 };
 
 /**
@@ -179,6 +187,14 @@ function handlePlaceBid(
         currentTurnIndex: (state.currentTurnIndex + 1) % state.players.length,
         phase: allBid ? "playing" : state.phase,
     };
+}
+
+function handlePlayCard(
+    state: SpadesState,
+    playerId: string,
+    card: Card
+): SpadesState {
+    return state; // Placeholder for actual play logic
 }
 
 function logHistory(state: SpadesState, action: GameAction): void {

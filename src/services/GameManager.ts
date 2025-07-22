@@ -5,6 +5,7 @@ export interface GameModule {
     init(room: Room, customSettings?: GameSettings): GameState;
     reducer(state: GameState, action: GameAction): GameState;
     getState(state: GameState): any;
+    getPlayerState(state: GameState, userId: string): any;
 }
 
 export interface GameState {
@@ -24,7 +25,7 @@ export interface GameSettings {
 export interface GameAction {
     type: string;
     payload?: any;
-    userId?: string;
+    userId: string;
 }
 
 class GameManager {
@@ -62,7 +63,20 @@ class GameManager {
             throw new Error(
                 `Game module for type '${gameState.type}' not found`
             );
+
         return module.getState(gameState);
+    }
+
+    getPlayerState(gameId: string | null, userId: string): any {
+        const gameState = this.getGame(gameId);
+        if (!gameState) throw new Error(`Game with ID '${gameId}' not found`);
+        const module = this.modules.get(gameState.type);
+        if (!module)
+            throw new Error(
+                `Game module for type '${gameState.type}' not found`
+            );
+
+        return module.getPlayerState(gameState, userId);
     }
 
     dispatch(gameId: string | null, action: GameAction): GameState {
