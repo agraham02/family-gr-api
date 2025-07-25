@@ -4,6 +4,7 @@
 
 import { SpadesState } from "..";
 import { User } from "../../../models/User";
+import { GamePlayers } from "../../../services/GameManager";
 import { Card, Rank, Suit } from "../types";
 
 /* ––––––––––––––––––––– CONSTANTS ––––––––––––––––––––– */
@@ -56,17 +57,22 @@ export function shuffleDeck(
  */
 export function dealCardsToPlayers(
     deck: Card[],
-    seats: User[]
+    seats: GamePlayers
 ): Record<string, Card[]> {
-    if (seats.length !== 4) throw new Error("Spades needs 4 seats");
+    const seatIds = Object.keys(seats);
+    if (seatIds.length !== 4) throw new Error("Spades needs 4 seats");
 
-    const hands: Record<string, Card[]> = Object.fromEntries(
-        seats.map((user) => [user.id, []])
+    const hands: Record<string, Card[]> = seatIds.reduce(
+        (acc, id) => {
+            acc[id] = [];
+            return acc;
+        },
+        {} as Record<string, Card[]>
     );
 
     deck.forEach((card, idx) => {
-        const seat = seats[idx % 4];
-        hands[seat.id].push(card);
+        const seatId = seatIds[idx % 4];
+        hands[seatId].push(card);
     });
 
     return hands;
