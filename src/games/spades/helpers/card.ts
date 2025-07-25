@@ -2,6 +2,7 @@
    Card helpers – no game-state, no I/O
    --------------------------------------------------------------------- */
 
+import { User } from "../../../models/User";
 import { Card, Rank, Suit } from "../types";
 
 /* ––––––––––––––––––––– CONSTANTS ––––––––––––––––––––– */
@@ -54,17 +55,17 @@ export function shuffleDeck(
  */
 export function dealCardsToPlayers(
     deck: Card[],
-    seats: string[]
+    seats: User[]
 ): Record<string, Card[]> {
     if (seats.length !== 4) throw new Error("Spades needs 4 seats");
 
     const hands: Record<string, Card[]> = Object.fromEntries(
-        seats.map((id) => [id, []])
+        seats.map((user) => [user.id, []])
     );
 
     deck.forEach((card, idx) => {
         const seat = seats[idx % 4];
-        hands[seat].push(card);
+        hands[seat.id].push(card);
     });
 
     return hands;
@@ -73,13 +74,13 @@ export function dealCardsToPlayers(
 /* ––––––––––––––––  SMALL UTILITIES –––––––––––––––––– */
 
 /** Clockwise successor */
-export function nextPlayer(order: string[], id: string): string {
-    const idx = order.indexOf(id);
-    return order[(idx + 1) % order.length];
-}
-
 export function nextPlayerIndex(order: string[], currentIndex: number): number {
     return (currentIndex + 1) % order.length;
+}
+
+export function nextPlayer(order: string[], id: string): string {
+    const idx = order.indexOf(id);
+    return order[nextPlayerIndex(order, idx)];
 }
 
 /** True if `a` beats `b` given the led suit (spades trump). */
