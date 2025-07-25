@@ -7,11 +7,35 @@ import {
     GameSettings,
 } from "../../services/GameManager";
 import { v4 as uuidv4 } from "uuid";
-import { Bid, Card } from "./types";
-import { buildDeck, dealCardsToPlayers, shuffleDeck } from "./helpers/card";
+import { Bid, Card, Suit } from "./types";
+import {
+    buildDeck,
+    currentPlayerId,
+    dealCardsToPlayers,
+    nextPlayerIndex,
+    shuffleDeck,
+} from "./helpers/card";
 import { omitFields } from "../../utils/omitFields";
+import { canPlayCard, resolveTrick } from "./helpers/player";
+import { User } from "../../models/User";
 
 const SPADES_NAME = "spades";
+const SPADES_DISPLAY_NAME = "Spades";
+export const spadesTeamRequirements = {
+    numTeams: 2,
+    playersPerTeam: 2,
+};
+const SPADES_METADATA = {
+    type: SPADES_NAME,
+    displayName: SPADES_DISPLAY_NAME,
+    requiresTeams: true,
+    minPlayers:
+        spadesTeamRequirements.numTeams * spadesTeamRequirements.playersPerTeam,
+    maxPlayers:
+        spadesTeamRequirements.numTeams * spadesTeamRequirements.playersPerTeam,
+    numTeams: spadesTeamRequirements.numTeams,
+    playersPerTeam: spadesTeamRequirements.playersPerTeam,
+};
 
 interface InitSeed {
     gameId: string; // unique game identifier
@@ -45,13 +69,16 @@ export interface CardPlay {
 export interface Trick {
     leaderId: string;
     plays: CardPlay[];
+    leadSuit: Suit | null; // suit of the first card played
     winnerId?: string;
 }
 
+type SpadesPhases = "bidding" | "playing" | "scoring" | "ended";
+
 export interface SpadesState extends GameState {
-    players: string[];
+    players: User[];
     teams: Record<number, Team>;
-    playOrder: number[];
+    playOrder: string[];
     currentTurnIndex: number;
     dealerIndex: number;
 
@@ -61,7 +88,7 @@ export interface SpadesState extends GameState {
     spadesBroken: boolean;
     currentTrick: Trick | null;
     completedTricks: Trick[];
-    phase: "bidding" | "playing" | "scoring" | "ended";
+    phase: SpadesPhases;
     round: number;
     history: string[]; // Action history for debugging
     settings: SpadesSettings;
@@ -72,7 +99,24 @@ function init(
     room: Room,
     customSettings?: Partial<SpadesSettings>
 ): SpadesState {
-    const players = room.users.map((u) => u.id);
+    const players = [...room.users];
+    const teams: Record<number, Team> = Object.fromEntries(
+        room.teams?.map((team, index) => [
+            index,
+            { players: team, score: 0 },
+        ]) || []
+    );
+
+    const numTeams = Object.keys(teams).length;
+    const playersPerTeam = teams[0]?.players.length || 0;
+    const playOrder: string[] = [];
+    for (let i = 0; i < playersPerTeam; i++) {
+        for (let j = 0; j < numTeams; j++) {
+            const playerId = teams[j].players[i];
+            if (playerId) playOrder.push(playerId);
+        }
+    }
+
     const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
     const deck = buildDeck();
     const shuffledDeck = shuffleDeck(deck);
@@ -84,8 +128,8 @@ function init(
         type: SPADES_NAME,
 
         players,
-        teams: {}, // To be filled with team data
-        playOrder: [], // To be filled with play order
+        teams, // To be filled with team data
+        playOrder,
         dealerIndex,
         currentTurnIndex: dealerIndex,
 
@@ -105,14 +149,9 @@ function init(
 function reducer(state: SpadesState, action: GameAction): SpadesState {
     logHistory(state, action);
     switch (action.type) {
-        case "DEAL_CARDS":
-            // Example: deal cards logic
-            return { ...state, hands: action.payload.hands, phase: "bidding" };
         case "PLACE_BID":
-            // Example: handle bidding
             return handlePlaceBid(state, action.userId, action.payload.bid);
         case "PLAY_CARD":
-            // Example: handle playing a card
             return handlePlayCard(state, action.userId, action.payload.card);
         case "SCORE_ROUND":
             // Example: handle scoring
@@ -142,6 +181,7 @@ export const spadesModule: GameModule = {
     reducer,
     getState,
     getPlayerState,
+    metadata: SPADES_METADATA,
 };
 
 /**
@@ -160,11 +200,11 @@ function handlePlaceBid(
     if (state.phase !== "bidding") {
         throw new Error("Bids can only be placed during the bidding phase.");
     }
-    if (state.players[state.currentTurnIndex] !== playerId) {
+    if (currentPlayerId(state) !== playerId) {
         throw new Error("Not your turn to place a bid.");
     }
     // Validate player
-    if (!state.players.includes(playerId)) {
+    if (!state.playOrder.some((pid) => pid === playerId)) {
         throw new Error("Invalid player ID for this game.");
     }
     // Validate bid (basic: must be a number, >= 0)
@@ -179,12 +219,12 @@ function handlePlaceBid(
     // Record bid
     const newBids = { ...state.bids, [playerId]: bid };
     // Check if all players have bid
-    const allBid = state.players.every((pid) => newBids[pid]);
+    const allBid = state.playOrder.every((pid) => newBids[pid]);
     // If all bids placed, advance phase
     return {
         ...state,
         bids: newBids,
-        currentTurnIndex: (state.currentTurnIndex + 1) % state.players.length,
+        currentTurnIndex: nextPlayerIndex(state),
         phase: allBid ? "playing" : state.phase,
     };
 }
@@ -194,7 +234,96 @@ function handlePlayCard(
     playerId: string,
     card: Card
 ): SpadesState {
-    return state; // Placeholder for actual play logic
+    // 1. Validate phase
+    if (state.phase !== "playing") {
+        throw new Error("Cards can only be played during the playing phase.");
+    }
+
+    // 2. Validate turn
+    if (currentPlayerId(state) !== playerId) {
+        throw new Error("Not your turn to play a card.");
+    }
+
+    // 3. Validate card is in hand
+    const playerHand = state.hands[playerId] || [];
+    const cardIdx = playerHand.findIndex(
+        (c) => c.suit === card.suit && c.rank === card.rank
+    );
+    if (cardIdx === -1) {
+        throw new Error("Card not in player's hand.");
+    }
+
+    // 4. Validate play is legal (follow suit, spades broken, etc.)
+    const trick = state.currentTrick || {
+        leaderId: playerId,
+        plays: [],
+        leadSuit: null,
+    };
+    if (!canPlayCard(card, playerHand, trick, state.spadesBroken)) {
+        throw new Error(
+            "Illegal card play (must follow suit or spades not broken)."
+        );
+    }
+
+    // 5. Remove card from hand
+    const newHand = [...playerHand];
+    newHand.splice(cardIdx, 1);
+    const newHands = { ...state.hands, [playerId]: newHand };
+
+    // 6. Add play to trick
+    const isFirstPlay = trick.plays.length === 0;
+    const leadSuit = isFirstPlay ? card.suit : trick.leadSuit;
+    const newTrick: Trick = {
+        ...trick,
+        plays: [...trick.plays, { playerId, card }],
+        leadSuit: leadSuit || null,
+    };
+
+    // 7. Update spadesBroken if a spade is played (and not the first trick)
+    const spadesBroken =
+        state.spadesBroken ||
+        (card.suit === "Spades" &&
+            !(
+                isFirstPlay &&
+                card.suit === "Spades" &&
+                trick.leadSuit === null
+            ));
+
+    // 8. If trick is complete, resolve winner and advance
+    let newCurrentTrick: Trick | null = newTrick;
+    let newCompletedTricks = state.completedTricks;
+    let newCurrentTurnIndex = nextPlayerIndex(state);
+    let newPhase: SpadesPhases = state.phase;
+    if (newTrick.plays.length === state.playOrder.length) {
+        // Trick complete
+        const winnerId = resolveTrick(newTrick);
+        newCompletedTricks = [
+            ...state.completedTricks,
+            { ...newTrick, winnerId },
+        ];
+        newCurrentTrick = null;
+        // Update current turn index to the winner of the trick
+        newCurrentTurnIndex = state.playOrder.findIndex(
+            (pid) => pid === winnerId
+        );
+        // If all tricks complete, advance phase
+        const allHandsEmpty = Object.values(newHands).every(
+            (h) => h.length === 0
+        );
+        if (allHandsEmpty) {
+            newPhase = "scoring";
+        }
+    }
+
+    return {
+        ...state,
+        hands: newHands,
+        currentTrick: newCurrentTrick,
+        completedTricks: newCompletedTricks,
+        spadesBroken,
+        currentTurnIndex: newCurrentTurnIndex,
+        phase: newPhase,
+    };
 }
 
 function logHistory(state: SpadesState, action: GameAction): void {
