@@ -6,6 +6,15 @@ export interface GameModule {
     reducer(state: GameState, action: GameAction): GameState;
     getState(state: GameState): any;
     getPlayerState(state: GameState, userId: string): any;
+    metadata: {
+        type: string;
+        displayName: string;
+        requiresTeams: boolean;
+        minPlayers: number;
+        maxPlayers: number;
+        numTeams?: number;
+        playersPerTeam?: number;
+    };
 }
 
 export interface GameState {
