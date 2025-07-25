@@ -157,6 +157,12 @@ function startServer() {
                     const gameId = room.gameId ?? null;
                     gameManager.dispatch(gameId, action);
                     emitGameEvent(room, "sync");
+                    emitPlayerGameEvent(
+                        socket,
+                        room,
+                        "player_sync",
+                        action.userId
+                    );
                 } catch (err) {
                     handleSocketError(socket, err);
                 }
