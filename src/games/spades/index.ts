@@ -76,13 +76,13 @@ export interface Trick {
 type SpadesPhases = "bidding" | "playing" | "scoring" | "ended";
 
 export interface SpadesState extends GameState {
-    players: User[];
     teams: Record<number, Team>;
     playOrder: string[];
     currentTurnIndex: number;
     dealerIndex: number;
 
     hands: Record<string, Card[]>;
+    handsCounts?: Record<string, number>;
     bids: Record<string, Bid>;
 
     spadesBroken: boolean;
@@ -99,7 +99,10 @@ function init(
     room: Room,
     customSettings?: Partial<SpadesSettings>
 ): SpadesState {
-    const players = [...room.users];
+    // Turn players into a object map for easier access
+    const players: Record<string, User> = Object.fromEntries(
+        room.users.map((user) => [user.id, user])
+    );
     const teams: Record<number, Team> = Object.fromEntries(
         room.teams?.map((team, index) => [
             index,
@@ -120,7 +123,7 @@ function init(
     const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
     const deck = buildDeck();
     const shuffledDeck = shuffleDeck(deck);
-    const dealerIndex = Math.floor(Math.random() * players.length);
+    const dealerIndex = Math.floor(Math.random() * room.users.length);
 
     return {
         id: uuidv4(),
@@ -162,17 +165,26 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
 }
 
 function getState(state: SpadesState): Partial<SpadesState> {
-    return omitFields(state, ["hands"]);
+    const publicState = omitFields(state, ["hands"]);
+    publicState.handsCounts = Object.fromEntries(
+        state.playOrder.map((id) => [id, state.hands[id].length || 0])
+    );
+    return publicState;
 }
 
 function getPlayerState(
     state: SpadesState,
     playerId: string
-): Partial<SpadesState> & { hand?: Card[] } {
-    const publicState = getState(state);
+): Partial<SpadesState> & { hand?: Card[]; localOrdering?: string[] } {
+    const idx = state.playOrder.indexOf(playerId);
+    const localOrdering = [
+        ...state.playOrder.slice(idx),
+        ...state.playOrder.slice(0, idx),
+    ];
+
     return {
-        // ...publicState,
         hand: state.hands[playerId] || [],
+        localOrdering,
     };
 }
 
