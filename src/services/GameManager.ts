@@ -1,5 +1,6 @@
 // src/services/GameManager.ts
 import { Room } from "../models/Room";
+import { User } from "../models/User";
 
 export interface GameModule {
     init(room: Room, customSettings?: GameSettings): GameState;
@@ -17,11 +18,14 @@ export interface GameModule {
     };
 }
 
+export type GamePlayers = Record<string, User>;
+
 export interface GameState {
     id: string;
     roomId: string;
     type: string;
     settings: GameSettings;
+    players: GamePlayers;
     history?: string[]; // Optional history for game actions
     // ...other game-specific state
 }
