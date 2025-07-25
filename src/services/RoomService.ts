@@ -1,4 +1,5 @@
 import { Room } from "../models/Room";
+import { validateTeamsForGame } from "../utils/validateTeamsForGame";
 import { User } from "../models/User";
 import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
@@ -214,6 +215,24 @@ export function kickUser(
     emitRoomEvent<{ userId: string }>(room, "user_kicked", {
         userId: targetUserId,
     });
+}
+
+export function setTeams(
+    roomId: string,
+    userId: string,
+    teams: string[][]
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can set teams");
+
+    // Validate teams using per-game logic
+    const allUserIds = room.users.map((u) => u.id);
+    validateTeamsForGame(room.selectedGameType, teams, allUserIds);
+
+    room.teams = teams;
+    emitRoomEvent<{ teams: string[][] }>(room, "teams_set", { teams });
 }
 
 export function startGame(
