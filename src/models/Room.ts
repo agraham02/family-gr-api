@@ -11,4 +11,6 @@ export interface Room {
     gameId: string | null;
     selectedGameType: string;
     createdAt: Date;
+    teams?: string[][]; // Array of teams, each team is an array of userIds
+    settings?: Record<string, any>; // Additional settings for the room
 }
