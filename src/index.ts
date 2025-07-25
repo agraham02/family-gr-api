@@ -12,7 +12,7 @@ import {
     promoteLeader,
     registerSocketUser,
     selectGame,
-    setReadyState,
+    setTeams,
     startGame,
     toggleReadyState,
 } from "./services/RoomService";
@@ -138,6 +138,15 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
+
+        socket.on("set_teams", ({ roomId, userId, teams }) => {
+            try {
+                setTeams(roomId, userId, teams);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
         socket.on("start_game", ({ roomId, userId, gameType }) => {
             try {
                 startGame(roomId, userId, gameType);
