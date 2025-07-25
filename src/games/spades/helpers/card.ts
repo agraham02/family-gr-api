@@ -2,6 +2,7 @@
    Card helpers – no game-state, no I/O
    --------------------------------------------------------------------- */
 
+import { SpadesState } from "..";
 import { User } from "../../../models/User";
 import { Card, Rank, Suit } from "../types";
 
@@ -74,13 +75,16 @@ export function dealCardsToPlayers(
 /* ––––––––––––––––  SMALL UTILITIES –––––––––––––––––– */
 
 /** Clockwise successor */
-export function nextPlayerIndex(order: string[], currentIndex: number): number {
-    return (currentIndex + 1) % order.length;
+export function nextPlayerIndex(state: SpadesState): number {
+    return (state.currentTurnIndex + 1) % state.playOrder.length;
 }
 
-export function nextPlayer(order: string[], id: string): string {
-    const idx = order.indexOf(id);
-    return order[nextPlayerIndex(order, idx)];
+export function nextPlayerId(state: SpadesState, id: string): string {
+    return state.playOrder[nextPlayerIndex(state)];
+}
+
+export function currentPlayerId(state: SpadesState): string {
+    return state.playOrder[state.currentTurnIndex];
 }
 
 /** True if `a` beats `b` given the led suit (spades trump). */
