@@ -10,6 +10,7 @@ import {
     handleUserDisconnect,
     kickUser,
     promoteLeader,
+    randomizeTeams,
     registerSocketUser,
     selectGame,
     setTeams,
@@ -141,6 +142,15 @@ function startServer() {
 
         socket.on("set_teams", ({ roomId, userId, teams }) => {
             try {
+                setTeams(roomId, userId, teams);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
+        socket.on("randomize_teams", ({ roomId, userId }) => {
+            try {
+                const teams = randomizeTeams(roomId, userId);
                 setTeams(roomId, userId, teams);
             } catch (err) {
                 handleSocketError(socket, err);

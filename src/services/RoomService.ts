@@ -235,6 +235,41 @@ export function setTeams(
     emitRoomEvent<{ teams: string[][] }>(room, "teams_set", { teams });
 }
 
+export function randomizeTeams(roomId: string, userId: string): string[][] {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can randomize teams");
+
+    // Only works for games with team requirements
+    const module = gameManager["modules"].get(room.selectedGameType);
+    if (!module) throw new Error("Game module not found");
+
+    const requirements = {
+        numTeams: module.metadata.numTeams ?? 0,
+        playersPerTeam: module.metadata.playersPerTeam ?? 0,
+    };
+    if (requirements.numTeams < 1) {
+        throw new Error("This game does not support teams.");
+    }
+
+    const userIds = room.users.map((u) => u.id);
+    // Shuffle userIds
+    for (let i = userIds.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [userIds[i], userIds[j]] = [userIds[j], userIds[i]];
+    }
+    // Distribute into teams round-robin
+    const teams: string[][] = Array.from(
+        { length: requirements.numTeams },
+        () => []
+    );
+    userIds.forEach((id, idx) => {
+        teams[idx % requirements.numTeams].push(id);
+    });
+    return teams;
+}
+
 export function startGame(
     roomId: string,
     userId: string,
