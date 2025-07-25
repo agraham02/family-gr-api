@@ -8,12 +8,21 @@ export async function createRoom(
 ) {
     try {
         const { roomName, userName } = req.body;
-        if (!roomName || !userName) {
-            const err = new Error("roomName and userName are required");
+        if (!userName) {
+            const err = new Error("userName is required");
             (err as any).status = 400;
             throw err;
         }
-        const { room, user } = RoomService.createRoom(roomName, userName);
+
+        let tempRoomName;
+        if (!roomName) {
+            tempRoomName = `Room-${Math.floor(Math.random() * 10000)}`;
+        }
+
+        const { room, user } = RoomService.createRoom(
+            roomName || tempRoomName,
+            userName
+        );
         res.status(201).json({
             roomId: room.id,
             userId: user.id,
