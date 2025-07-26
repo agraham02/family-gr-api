@@ -11,8 +11,8 @@ import { Card, Rank, Suit } from "../types";
 export const SUITS: Suit[] = [
     Suit.Spades,
     Suit.Hearts,
-    Suit.Diamonds,
     Suit.Clubs,
+    Suit.Diamonds,
 ];
 export const RANK_ORDER: Rank[] = [
     Rank.Two,
@@ -75,7 +75,20 @@ export function dealCardsToPlayers(
         hands[seatId].push(card);
     });
 
+    // Sort each hand for consistent ordering
+    for (const seatId of seatIds) {
+        hands[seatId] = sortHand(hands[seatId]);
+    }
+
     return hands;
+}
+
+function sortHand(hand: Card[]): Card[] {
+    return hand.slice().sort((a, b) => {
+        const suitComparison = SUITS.indexOf(b.suit) - SUITS.indexOf(a.suit);
+        if (suitComparison !== 0) return suitComparison;
+        return RANK_ORDER.indexOf(a.rank) - RANK_ORDER.indexOf(b.rank);
+    });
 }
 
 /* ––––––––––––––––  SMALL UTILITIES –––––––––––––––––– */
