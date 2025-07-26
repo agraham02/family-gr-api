@@ -18,6 +18,7 @@ import {
 import { omitFields } from "../../utils/omitFields";
 import { canPlayCard, resolveTrick } from "./helpers/player";
 import { User } from "../../models/User";
+import { calculateSpadesScores } from "./helpers/score";
 
 const SPADES_NAME = "spades";
 const SPADES_DISPLAY_NAME = "Spades";
@@ -59,6 +60,7 @@ const DEFAULT_SETTINGS: SpadesSettings = {
 interface Team {
     players: string[];
     score: number;
+    nil?: boolean;
 }
 
 export interface CardPlay {
@@ -73,7 +75,7 @@ export interface Trick {
     winnerId?: string;
 }
 
-type SpadesPhases = "bidding" | "playing" | "scoring" | "ended";
+type SpadesPhases = "bidding" | "playing" | "scoring" | "finished";
 
 export interface SpadesState extends GameState {
     teams: Record<number, Team>;
@@ -92,7 +94,8 @@ export interface SpadesState extends GameState {
     round: number;
     history: string[]; // Action history for debugging
     settings: SpadesSettings;
-    // Add more spades-specific state as needed
+    winnerTeamId?: number;
+    isTie?: boolean;
 }
 
 function init(
@@ -323,7 +326,58 @@ function handlePlayCard(
             (h) => h.length === 0
         );
         if (allHandsEmpty) {
-            newPhase = "scoring";
+            // Calculate scores and update team scores
+            const { teamScores } = calculateSpadesScores({
+                ...state,
+                hands: newHands,
+                completedTricks: newCompletedTricks,
+            });
+            // Update team scores directly
+            const updatedTeams = { ...state.teams };
+            // Update team scores directly and check win condition for all teams
+            const winningTeams: number[] = [];
+            Object.keys(updatedTeams).forEach((teamId) => {
+                const numId = Number(teamId);
+                updatedTeams[numId] = {
+                    ...updatedTeams[numId],
+                    score: teamScores[numId],
+                };
+                if (teamScores[numId] >= state.settings.winTarget) {
+                    winningTeams.push(numId);
+                }
+            });
+            let winnerTeamId: number | undefined = undefined;
+            let isTie = false;
+            if (winningTeams.length === 1) {
+                winnerTeamId = winningTeams[0];
+            } else if (winningTeams.length > 1) {
+                // Compare scores to determine winner or tie
+                const scores = winningTeams.map((id) => teamScores[id]);
+                const maxScore = Math.max(...scores);
+                const topTeams = winningTeams.filter(
+                    (id) => teamScores[id] === maxScore
+                );
+                if (topTeams.length === 1) {
+                    winnerTeamId = topTeams[0];
+                } else {
+                    // Tie
+                    isTie = true;
+                }
+            }
+            newPhase =
+                winnerTeamId !== undefined || isTie ? "finished" : "scoring";
+            return {
+                ...state,
+                hands: newHands,
+                currentTrick: newCurrentTrick,
+                completedTricks: newCompletedTricks,
+                spadesBroken,
+                currentTurnIndex: newCurrentTurnIndex,
+                phase: newPhase,
+                teams: updatedTeams,
+                winnerTeamId,
+                isTie: isTie || undefined,
+            };
         }
     }
 
