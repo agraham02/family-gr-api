@@ -366,6 +366,35 @@ function handlePlayCard(
             }
             newPhase =
                 winnerTeamId !== undefined || isTie ? "finished" : "scoring";
+            if (newPhase === "scoring") {
+                // Reset for next round
+                // Advance dealer index
+                const nextDealerIndex =
+                    (state.dealerIndex + 1) % state.playOrder.length;
+                // Shuffle and deal new hands
+                const deck = buildDeck();
+                const shuffledDeck = shuffleDeck(deck);
+                const newHandsForNextRound = dealCardsToPlayers(
+                    shuffledDeck,
+                    state.players
+                );
+                // Reset bids, tricks, spadesBroken, etc.
+                return {
+                    ...state,
+                    hands: newHandsForNextRound,
+                    bids: {},
+                    currentTrick: null,
+                    completedTricks: [],
+                    spadesBroken: false,
+                    currentTurnIndex: nextDealerIndex,
+                    dealerIndex: nextDealerIndex,
+                    phase: "bidding",
+                    teams: updatedTeams,
+                    round: state.round + 1,
+                    winnerTeamId: undefined,
+                    isTie: undefined,
+                };
+            }
             return {
                 ...state,
                 hands: newHands,
