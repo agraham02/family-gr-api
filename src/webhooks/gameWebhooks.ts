@@ -16,7 +16,7 @@ export type GameEventPayload<T = {}> = {
 
 export type PlayerGameEvent<T = {}> = {
     event: string;
-    playerState: any | null;
+    playerState: any | null; // TODO: add type safety for player state
     timestamp: string;
 };
 
