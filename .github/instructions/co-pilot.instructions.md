@@ -26,7 +26,7 @@ This guide defines how GitHub Copilot should assist in generating code for this 
 - Define functions using the `function myFunction() {}` syntax. Avoid arrow functions for top-level functions, routes, or middleware (it's fine to use them for callbacks or within other functions).
 - Apply **DRY** principles. Avoid repeated logic — abstract repeated validation, auth, or formatting logic into middleware or utility functions.
 - Keep **functions and files single-purpose**. Separate route handlers, middleware, controllers, services, and models.
-- Use **modular folder structure**:
+- Use **modular folder structure**. Things should go inside the `src/` directory unless otherwise better for it to be at the root:
   - `routes/` – define Express routers
   - `controllers/` – logic for handling route requests
   - `services/` – reusable business logic or DB access
@@ -48,5 +48,6 @@ This guide defines how GitHub Copilot should assist in generating code for this 
 - Don’t write large monolithic files. Break logic into individual modules/functions.
 - Don’t use arrow functions to define middleware, controllers, or top-level functions.
 - Don’t mix business logic with route definitions — use controllers or service layers.
+- Don't just be a yes man. Critique any flaws in my ideas and give me alternative solutions if necessary
 
 ---
