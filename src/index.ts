@@ -27,7 +27,8 @@ import {
 
 dotenv.config();
 
-const PORT = process.env.PORT || 4000;
+const DEFAULT_PORT = 3000;
+const PORT = process.env.PORT || DEFAULT_PORT;
 
 gameManager.registerGameModule("spades", spadesModule);
 

@@ -76,7 +76,7 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
 }
 
 function scoreNilBids(
-    bids: Record<string, any>,
+    bids: Record<string, any>, // TODO: Define proper type for bids
     completedTricks: Trick[],
     playerTeam: Record<string, number>,
     teamScores: Record<number, number>,
@@ -106,12 +106,12 @@ function scoreNilBids(
 }
 
 function scoreRegularBids(
-    teams: Record<number, any>,
+    teams: Record<number, any>, // TODO: Define proper type for teams
     tricksWon: Record<number, number>,
     teamBids: Record<number, number>,
     teamScores: Record<number, number>,
     teamBags: Record<number, number>,
-    settings: any
+    settings: any // TODO: Define proper type for settings
 ) {
     Object.keys(teams).forEach((teamId) => {
         const numId = Number(teamId);
