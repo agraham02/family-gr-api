@@ -45,6 +45,14 @@ class GameManager {
     private games: Map<string, GameState> = new Map();
     private modules: Map<string, GameModule> = new Map();
 
+    public getAllModules(): Map<string, GameModule> {
+        return this.modules;
+    }
+
+    public getGameModule(type: string): GameModule | undefined {
+        return this.modules.get(type);
+    }
+
     registerGameModule(type: string, module: GameModule): void {
         this.modules.set(type, module);
     }

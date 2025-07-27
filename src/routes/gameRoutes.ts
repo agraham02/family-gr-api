@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.get("/games", (req, res) => {
     // Get all registered game modules and their metadata
-    const games = Array.from(gameManager["modules"].entries()).map(
+    const games = Array.from(gameManager.getAllModules().entries()).map(
         ([type, module]) => {
             // Fallback if metadata is missing
             return module.metadata

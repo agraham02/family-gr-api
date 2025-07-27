@@ -242,7 +242,7 @@ export function randomizeTeams(roomId: string, userId: string): string[][] {
         throw new Error("Only the current leader can randomize teams");
 
     // Only works for games with team requirements
-    const module = gameManager["modules"].get(room.selectedGameType);
+    const module = gameManager.getGameModule(room.selectedGameType);
     if (!module) throw new Error("Game module not found");
 
     const requirements = {
