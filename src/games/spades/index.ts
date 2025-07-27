@@ -26,14 +26,15 @@ export const spadesTeamRequirements = {
     numTeams: 2,
     playersPerTeam: 2,
 };
+const SPADES_TOTAL_PLAYERS =
+    spadesTeamRequirements.numTeams * spadesTeamRequirements.playersPerTeam;
+
 const SPADES_METADATA = {
     type: SPADES_NAME,
     displayName: SPADES_DISPLAY_NAME,
     requiresTeams: true,
-    minPlayers:
-        spadesTeamRequirements.numTeams * spadesTeamRequirements.playersPerTeam,
-    maxPlayers:
-        spadesTeamRequirements.numTeams * spadesTeamRequirements.playersPerTeam,
+    minPlayers: SPADES_TOTAL_PLAYERS,
+    maxPlayers: SPADES_TOTAL_PLAYERS,
     numTeams: spadesTeamRequirements.numTeams,
     playersPerTeam: spadesTeamRequirements.playersPerTeam,
 };
@@ -423,8 +424,7 @@ function handlePlayCard(
 
 function logHistory(state: SpadesState, action: GameAction): void {
     // Log the current game state (for debugging or auditing)
-    console.log("Game State:", JSON.stringify(state, null, 2));
-    console.log("Action:", JSON.stringify(action, null, 2));
+    // Use structured logging here if needed, e.g. logger.info({ state, action });
     state.history.push(
         `Action: ${action.type}, Player: ${action.userId}, Payload: ${JSON.stringify(action.payload)}`
     );

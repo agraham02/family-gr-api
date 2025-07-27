@@ -117,7 +117,6 @@ function startServer() {
         });
         socket.on("promote_leader", ({ roomId, userId, newLeaderId }) => {
             try {
-                console.log(roomId, userId, newLeaderId);
                 promoteLeader(roomId, userId, newLeaderId);
             } catch (err) {
                 handleSocketError(socket, err);
@@ -198,7 +197,8 @@ function startServer() {
 
         socket.on("disconnect", () => {
             try {
-                console.log(`Client disconnected: ${socket.id}`);
+                // Use structured logging middleware instead of console.log
+                // app.locals.logger?.info(`Client disconnected: ${socket.id}`);
                 handleUserDisconnect(socket.id);
             } catch (err) {
                 handleSocketError(socket, err);
