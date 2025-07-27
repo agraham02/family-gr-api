@@ -76,7 +76,12 @@ export interface Trick {
     winnerId?: string;
 }
 
-type SpadesPhases = "bidding" | "playing" | "scoring" | "finished";
+type SpadesPhases =
+    | "bidding"
+    | "playing"
+    | "trick-result"
+    | "scoring"
+    | "finished";
 
 export interface SpadesState extends GameState {
     teams: Record<number, Team>;
@@ -97,6 +102,8 @@ export interface SpadesState extends GameState {
     settings: SpadesSettings;
     winnerTeamId?: number;
     isTie?: boolean;
+    lastTrickWinnerId?: string;
+    lastTrickWinningCard?: Card;
 }
 
 function init(
@@ -135,6 +142,7 @@ function init(
         type: SPADES_NAME,
 
         players,
+        leaderId: room.leaderId ?? playOrder[dealerIndex],
         teams, // To be filled with team data
         playOrder,
         dealerIndex,
@@ -160,6 +168,27 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             return handlePlaceBid(state, action.userId, action.payload.bid);
         case "PLAY_CARD":
             return handlePlayCard(state, action.userId, action.payload.card);
+        case "CONTINUE_AFTER_TRICK_RESULT": {
+            // Only process if phase is 'trick-result'
+            if (state.phase !== "trick-result") return state;
+            // Advance to next trick
+            // Find last trick winner
+            const lastTrick =
+                state.completedTricks[state.completedTricks.length - 1];
+            const winnerId = lastTrick?.winnerId;
+            // Set currentTurnIndex to winner
+            const newCurrentTurnIndex = winnerId
+                ? state.playOrder.findIndex((pid) => pid === winnerId)
+                : state.currentTurnIndex;
+            return {
+                ...state,
+                phase: "playing",
+                currentTurnIndex: newCurrentTurnIndex,
+                currentTrick: null, // reset here
+                lastTrickWinnerId: undefined,
+                lastTrickWinningCard: undefined,
+            };
+        }
         case "SCORE_ROUND":
             // Example: handle scoring
             return { ...state, phase: "scoring" };
@@ -305,11 +334,13 @@ function handlePlayCard(
                 trick.leadSuit === null
             ));
 
-    // 8. If trick is complete, resolve winner and advance
+    // 8. If trick is complete, resolve winner and show result
     let newCurrentTrick: Trick | null = newTrick;
     let newCompletedTricks = state.completedTricks;
     let newCurrentTurnIndex = nextPlayerIndex(state);
     let newPhase: SpadesPhases = state.phase;
+    let lastTrickWinnerId: string | undefined = undefined;
+    let lastTrickWinningCard: Card | undefined = undefined;
     if (newTrick.plays.length === state.playOrder.length) {
         // Trick complete
         const winnerId = resolveTrick(newTrick);
@@ -317,7 +348,11 @@ function handlePlayCard(
             ...state.completedTricks,
             { ...newTrick, winnerId },
         ];
-        newCurrentTrick = null;
+        // Do not reset currentTrick here; keep it visible during trick-result phase
+        // Find the winning card
+        const winningPlay = newTrick.plays.find((p) => p.playerId === winnerId);
+        lastTrickWinnerId = winnerId;
+        lastTrickWinningCard = winningPlay?.card;
         // Update current turn index to the winner of the trick
         newCurrentTurnIndex = state.playOrder.findIndex(
             (pid) => pid === winnerId
@@ -394,6 +429,8 @@ function handlePlayCard(
                     round: state.round + 1,
                     winnerTeamId: undefined,
                     isTie: undefined,
+                    lastTrickWinnerId: undefined,
+                    lastTrickWinningCard: undefined,
                 };
             }
             return {
@@ -407,8 +444,22 @@ function handlePlayCard(
                 teams: updatedTeams,
                 winnerTeamId,
                 isTie: isTie || undefined,
+                lastTrickWinnerId,
+                lastTrickWinningCard,
             };
         }
+        // Show trick result before advancing
+        return {
+            ...state,
+            hands: newHands,
+            currentTrick: newTrick, // keep visible during trick-result
+            completedTricks: newCompletedTricks,
+            spadesBroken,
+            currentTurnIndex: newCurrentTurnIndex,
+            phase: "trick-result",
+            lastTrickWinnerId,
+            lastTrickWinningCard,
+        };
     }
 
     return {
@@ -419,6 +470,8 @@ function handlePlayCard(
         spadesBroken,
         currentTurnIndex: newCurrentTurnIndex,
         phase: newPhase,
+        lastTrickWinnerId: undefined,
+        lastTrickWinningCard: undefined,
     };
 }
 
