@@ -11,6 +11,23 @@ const roomCodeToId: Map<string, string> = new Map();
 const socketToUser: Map<string, { roomId: string; userId: string }> = new Map();
 
 /**
+ * Generates a unique 6-character alphanumeric room code.
+ */
+async function generateUniqueRoomCode(): Promise<string> {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let code: string;
+    // make sure js waits for code generation to be finished
+    return await new Promise((resolve) => {
+        do {
+            code = Array.from({ length: 6 }, () =>
+                chars.charAt(Math.floor(Math.random() * chars.length))
+            ).join("");
+        } while (roomCodeToId.has(code));
+        resolve(code);
+    });
+}
+
+/**
  * Register a socket connection to a user and room after REST join.
  */
 export function registerSocketUser(
@@ -21,11 +38,11 @@ export function registerSocketUser(
     socketToUser.set(socketId, { roomId, userId });
 }
 
-export function createRoom(
+export async function createRoom(
     roomName: string,
     userName: string,
     userId?: string
-): { room: Room; user: User } {
+): Promise<{ room: Room; user: User }> {
     const user: User = {
         id: userId || uuidv4(),
         name: userName,
@@ -33,7 +50,7 @@ export function createRoom(
 
     const room: Room = {
         id: uuidv4(),
-        code: uuidv4().slice(0, 6), // Generate a short code for the room
+        code: await generateUniqueRoomCode(), // Generate a unique short code for the room
         name: roomName,
         users: [user],
         leaderId: user.id,

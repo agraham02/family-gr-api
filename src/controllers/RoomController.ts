@@ -19,7 +19,7 @@ export async function createRoom(
             tempRoomName = `Room-${Math.floor(Math.random() * 10000)}`;
         }
 
-        const { room, user } = RoomService.createRoom(
+        const { room, user } = await RoomService.createRoom(
             roomName || tempRoomName,
             userName
         );
