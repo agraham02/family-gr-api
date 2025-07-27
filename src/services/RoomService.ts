@@ -280,6 +280,8 @@ export function startGame(
     if (!room) throw new Error("Room not found");
     if (room.leaderId !== userId)
         throw new Error("Only the current leader can start the game");
+    if (Object.values(room.readyStates).some((ready) => !ready))
+        throw new Error("Not all players are ready");
 
     // Create game instance
     const gameId = gameManager.createGame(gameType, room, customSettings);
