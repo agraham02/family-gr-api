@@ -27,6 +27,7 @@ export interface GameState {
     settings: GameSettings;
     players: GamePlayers;
     history?: string[]; // Optional history for game actions
+    leaderId: string;
     // ...other game-specific state
 }
 

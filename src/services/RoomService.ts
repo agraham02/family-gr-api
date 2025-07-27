@@ -307,7 +307,7 @@ export function startGame(
 
     // Optionally, emit initial game state
     const gameState = gameManager.getGame(gameId);
-    emitRoomEvent(room, "game_started", { gameId, gameState });
+    emitRoomEvent(room, "game_started", { gameId, gameState, gameType });
 }
 
 export function closeRoom(roomId: string, userId: string): void {
