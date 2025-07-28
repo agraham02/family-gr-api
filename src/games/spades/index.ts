@@ -129,6 +129,7 @@ function init(
 
     const numTeams = Object.keys(teams).length;
     const playersPerTeam = teams[0]?.players.length || 0;
+    const dealerIndex = Math.floor(Math.random() * (playersPerTeam * numTeams));
     const playOrder: string[] = [];
     for (let i = 0; i < playersPerTeam; i++) {
         for (let j = 0; j < numTeams; j++) {
@@ -140,7 +141,6 @@ function init(
     const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
     const deck = buildDeck();
     const shuffledDeck = shuffleDeck(deck);
-    const dealerIndex = Math.floor(Math.random() * room.users.length);
 
     return {
         id: uuidv4(),
@@ -148,7 +148,7 @@ function init(
         type: SPADES_NAME,
 
         players,
-        leaderId: room.leaderId ?? playOrder[dealerIndex],
+        leaderId: room.leaderId ?? playOrder[dealerIndex] ?? playOrder[0],
         teams, // To be filled with team data
         playOrder,
         dealerIndex,
@@ -415,7 +415,7 @@ function handlePlayCard(
             });
             const { teamScores } = scoreResult;
             // Use scoreResult.scoreBreakdown if available, else fallback to teamScores
-            const scoreBreakdown = (scoreResult as any).scoreBreakdown ?? {};
+            const scoreBreakdown = scoreResult.scoreBreakdown ?? {};
             // Calculate tricks won per player
             const roundTrickCounts: Record<string, number> = {};
             // Initialize all players to 0
