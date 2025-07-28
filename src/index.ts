@@ -66,9 +66,7 @@ function startServer() {
                 socket.join(roomId);
                 const room = getRoom(roomId);
                 if (!room) {
-                    throw new Error(
-                        `Room with ID ${roomId} not found for socket ${socket.id}`
-                    );
+                    throw new Error("Room not found");
                 }
                 emitRoomEvent(room, "sync");
             } catch (err) {
@@ -86,9 +84,7 @@ function startServer() {
 
                 const room = getRoom(roomId);
                 if (!room) {
-                    throw new Error(
-                        `Room with ID ${roomId} not found for socket ${socket.id}`
-                    );
+                    throw new Error("Room not found");
                 }
                 emitGameEvent(room, "sync");
             } catch (err) {
@@ -100,7 +96,7 @@ function startServer() {
             try {
                 const room = getRoom(roomId);
                 if (!room) {
-                    throw new Error(`Room with ID ${roomId} not found`);
+                    throw new Error("Room not found");
                 }
 
                 emitPlayerGameEvent(socket, room, "player_sync", userId);
@@ -171,7 +167,7 @@ function startServer() {
                 try {
                     const room = getRoom(roomId);
                     if (!room) {
-                        throw new Error(`Room with ID ${roomId} not found`);
+                        throw new Error("Room not found");
                     }
                     const gameId = room.gameId ?? null;
                     gameManager.dispatch(gameId, action);
@@ -198,6 +194,7 @@ function startServer() {
 
         socket.on("disconnect", () => {
             try {
+                console.log(`Client disconnected: ${socket.id}`);
                 // Use structured logging middleware instead of console.log
                 // app.locals.logger?.info(`Client disconnected: ${socket.id}`);
                 handleUserDisconnect(socket.id);

@@ -76,7 +76,13 @@ export interface Trick {
     winnerId?: string;
 }
 
-type SpadesPhases = "bidding" | "playing" | "scoring" | "finished";
+type SpadesPhases =
+    | "bidding"
+    | "playing"
+    | "trick-result"
+    | "scoring"
+    | "round-summary"
+    | "finished";
 
 export interface SpadesState extends GameState {
     teams: Record<number, Team>;
@@ -97,6 +103,13 @@ export interface SpadesState extends GameState {
     settings: SpadesSettings;
     winnerTeamId?: number;
     isTie?: boolean;
+
+    lastTrickWinnerId?: string;
+    lastTrickWinningCard?: Card;
+
+    roundTrickCounts: Record<string, number>;
+    roundTeamScores: Record<number, number>; // scores for each team for the round.
+    roundScoreBreakdown: Record<number, any>; // detailed breakdown for each team (e.g., bags, nil, bonuses, penalties).
 }
 
 function init(
@@ -116,6 +129,7 @@ function init(
 
     const numTeams = Object.keys(teams).length;
     const playersPerTeam = teams[0]?.players.length || 0;
+    const dealerIndex = Math.floor(Math.random() * (playersPerTeam * numTeams));
     const playOrder: string[] = [];
     for (let i = 0; i < playersPerTeam; i++) {
         for (let j = 0; j < numTeams; j++) {
@@ -127,7 +141,6 @@ function init(
     const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
     const deck = buildDeck();
     const shuffledDeck = shuffleDeck(deck);
-    const dealerIndex = Math.floor(Math.random() * room.users.length);
 
     return {
         id: uuidv4(),
@@ -135,6 +148,7 @@ function init(
         type: SPADES_NAME,
 
         players,
+        leaderId: room.leaderId ?? playOrder[dealerIndex] ?? playOrder[0],
         teams, // To be filled with team data
         playOrder,
         dealerIndex,
@@ -150,6 +164,10 @@ function init(
         round: 1,
         settings,
         history: [],
+
+        roundTrickCounts: {},
+        roundTeamScores: {},
+        roundScoreBreakdown: {},
     };
 }
 
@@ -160,9 +178,65 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             return handlePlaceBid(state, action.userId, action.payload.bid);
         case "PLAY_CARD":
             return handlePlayCard(state, action.userId, action.payload.card);
+        case "CONTINUE_AFTER_TRICK_RESULT": {
+            // Only process if phase is 'trick-result'
+            if (state.phase !== "trick-result") return state;
+            // Advance to next trick
+            // Find last trick winner
+            const lastTrick =
+                state.completedTricks[state.completedTricks.length - 1];
+            const winnerId = lastTrick?.winnerId;
+            // Set currentTurnIndex to winner
+            const newCurrentTurnIndex = winnerId
+                ? state.playOrder.findIndex((pid) => pid === winnerId)
+                : state.currentTurnIndex;
+            return {
+                ...state,
+                phase: "playing",
+                currentTurnIndex: newCurrentTurnIndex,
+                currentTrick: null, // reset here
+                lastTrickWinnerId: undefined,
+                lastTrickWinningCard: undefined,
+            };
+        }
         case "SCORE_ROUND":
             // Example: handle scoring
             return { ...state, phase: "scoring" };
+        case "CONTINUE_AFTER_ROUND_SUMMARY": {
+            // Only process if phase is 'round-summary'
+            if (state.phase !== "round-summary") return state;
+            // Advance to next round
+            // Advance dealer index
+            const nextDealerIndex =
+                (state.dealerIndex + 1) % state.playOrder.length;
+            // Shuffle and deal new hands
+            const deck = buildDeck();
+            const shuffledDeck = shuffleDeck(deck);
+            const newHandsForNextRound = dealCardsToPlayers(
+                shuffledDeck,
+                state.players
+            );
+            // Reset bids, tricks, spadesBroken, etc.
+            return {
+                ...state,
+                hands: newHandsForNextRound,
+                bids: {},
+                currentTrick: null,
+                completedTricks: [],
+                spadesBroken: false,
+                currentTurnIndex: nextDealerIndex,
+                dealerIndex: nextDealerIndex,
+                phase: "bidding",
+                round: state.round + 1,
+                winnerTeamId: undefined,
+                isTie: undefined,
+                lastTrickWinnerId: undefined,
+                lastTrickWinningCard: undefined,
+                roundTrickCounts: {},
+                roundTeamScores: {},
+                roundScoreBreakdown: {},
+            };
+        }
         default:
             return state;
     }
@@ -305,11 +379,13 @@ function handlePlayCard(
                 trick.leadSuit === null
             ));
 
-    // 8. If trick is complete, resolve winner and advance
+    // 8. If trick is complete, resolve winner and show result
     let newCurrentTrick: Trick | null = newTrick;
     let newCompletedTricks = state.completedTricks;
     let newCurrentTurnIndex = nextPlayerIndex(state);
     let newPhase: SpadesPhases = state.phase;
+    let lastTrickWinnerId: string | undefined = undefined;
+    let lastTrickWinningCard: Card | undefined = undefined;
     if (newTrick.plays.length === state.playOrder.length) {
         // Trick complete
         const winnerId = resolveTrick(newTrick);
@@ -317,7 +393,11 @@ function handlePlayCard(
             ...state.completedTricks,
             { ...newTrick, winnerId },
         ];
-        newCurrentTrick = null;
+        // Do not reset currentTrick here; keep it visible during trick-result phase
+        // Find the winning card
+        const winningPlay = newTrick.plays.find((p) => p.playerId === winnerId);
+        lastTrickWinnerId = winnerId;
+        lastTrickWinningCard = winningPlay?.card;
         // Update current turn index to the winner of the trick
         newCurrentTurnIndex = state.playOrder.findIndex(
             (pid) => pid === winnerId
@@ -328,87 +408,76 @@ function handlePlayCard(
         );
         if (allHandsEmpty) {
             // Calculate scores and update team scores
-            const { teamScores } = calculateSpadesScores({
+            const scoreResult = calculateSpadesScores({
                 ...state,
                 hands: newHands,
                 completedTricks: newCompletedTricks,
             });
-            // Update team scores directly
-            const updatedTeams = { ...state.teams };
-            // Update team scores directly and check win condition for all teams
-            const winningTeams: number[] = [];
-            Object.keys(updatedTeams).forEach((teamId) => {
-                const numId = Number(teamId);
-                updatedTeams[numId] = {
-                    ...updatedTeams[numId],
-                    score: teamScores[numId],
-                };
-                if (teamScores[numId] >= state.settings.winTarget) {
-                    winningTeams.push(numId);
+            const { teamScores } = scoreResult;
+            // Use scoreResult.scoreBreakdown if available, else fallback to teamScores
+            const scoreBreakdown = scoreResult.scoreBreakdown ?? {};
+            // Calculate tricks won per player
+            const roundTrickCounts: Record<string, number> = {};
+            // Initialize all players to 0
+            state.playOrder.forEach((playerId) => {
+                roundTrickCounts[playerId] = 0;
+            });
+            newCompletedTricks.forEach((trick) => {
+                if (trick.winnerId) {
+                    roundTrickCounts[trick.winnerId] += 1;
                 }
             });
-            let winnerTeamId: number | undefined = undefined;
-            let isTie = false;
-            if (winningTeams.length === 1) {
-                winnerTeamId = winningTeams[0];
-            } else if (winningTeams.length > 1) {
-                // Compare scores to determine winner or tie
-                const scores = winningTeams.map((id) => teamScores[id]);
-                const maxScore = Math.max(...scores);
-                const topTeams = winningTeams.filter(
-                    (id) => teamScores[id] === maxScore
-                );
-                if (topTeams.length === 1) {
-                    winnerTeamId = topTeams[0];
-                } else {
-                    // Tie
-                    isTie = true;
-                }
-            }
-            newPhase =
-                winnerTeamId !== undefined || isTie ? "finished" : "scoring";
-            if (newPhase === "scoring") {
-                // Reset for next round
-                // Advance dealer index
-                const nextDealerIndex =
-                    (state.dealerIndex + 1) % state.playOrder.length;
-                // Shuffle and deal new hands
-                const deck = buildDeck();
-                const shuffledDeck = shuffleDeck(deck);
-                const newHandsForNextRound = dealCardsToPlayers(
-                    shuffledDeck,
-                    state.players
-                );
-                // Reset bids, tricks, spadesBroken, etc.
-                return {
-                    ...state,
-                    hands: newHandsForNextRound,
-                    bids: {},
-                    currentTrick: null,
-                    completedTricks: [],
-                    spadesBroken: false,
-                    currentTurnIndex: nextDealerIndex,
-                    dealerIndex: nextDealerIndex,
-                    phase: "bidding",
-                    teams: updatedTeams,
-                    round: state.round + 1,
-                    winnerTeamId: undefined,
-                    isTie: undefined,
-                };
-            }
+            // Calculate team scores for the round
+            const roundTeamScores: Record<number, number> = {};
+            Object.keys(teamScores).forEach((teamId) => {
+                roundTeamScores[Number(teamId)] =
+                    scoreBreakdown[teamId]?.roundScore ??
+                    teamScores[Number(teamId)];
+            });
+            // Set round summary phase and expose breakdowns
             return {
                 ...state,
                 hands: newHands,
-                currentTrick: newCurrentTrick,
+                currentTrick: null,
                 completedTricks: newCompletedTricks,
                 spadesBroken,
                 currentTurnIndex: newCurrentTurnIndex,
-                phase: newPhase,
-                teams: updatedTeams,
-                winnerTeamId,
-                isTie: isTie || undefined,
+                phase: "round-summary",
+                teams: {
+                    ...state.teams,
+                    ...Object.keys(teamScores).reduce(
+                        (acc, teamId) => {
+                            acc[Number(teamId)] = {
+                                ...state.teams[Number(teamId)],
+                                score: teamScores[Number(teamId)],
+                            };
+                            return acc;
+                        },
+                        {} as Record<number, Team>
+                    ),
+                },
+                winnerTeamId: undefined,
+                isTie: undefined,
+                lastTrickWinnerId: undefined,
+                lastTrickWinningCard: undefined,
+                roundTrickCounts,
+                roundTeamScores,
+                roundScoreBreakdown: scoreBreakdown,
+                // totalTeamScores field deprecated
             };
         }
+        // Show trick result before advancing
+        return {
+            ...state,
+            hands: newHands,
+            currentTrick: newTrick, // keep visible during trick-result
+            completedTricks: newCompletedTricks,
+            spadesBroken,
+            currentTurnIndex: newCurrentTurnIndex,
+            phase: "trick-result",
+            lastTrickWinnerId,
+            lastTrickWinningCard,
+        };
     }
 
     return {
@@ -419,6 +488,8 @@ function handlePlayCard(
         spadesBroken,
         currentTurnIndex: newCurrentTurnIndex,
         phase: newPhase,
+        lastTrickWinnerId: undefined,
+        lastTrickWinningCard: undefined,
     };
 }
 

@@ -60,7 +60,7 @@ export function dealCardsToPlayers(
     seats: GamePlayers
 ): Record<string, Card[]> {
     const seatIds = Object.keys(seats);
-    if (seatIds.length !== 4) throw new Error("Spades needs 4 seats");
+    if (seatIds.length !== 4) throw new Error("Spades needs 4 players");
 
     const hands: Record<string, Card[]> = seatIds.reduce(
         (acc, id) => {

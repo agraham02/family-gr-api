@@ -8,6 +8,7 @@ interface ScoreResult {
         bids: Record<number, number>;
         nilSuccess: Record<number, boolean>;
     };
+    scoreBreakdown: Record<string, any>; // Detailed breakdown of scores
 }
 
 /**
@@ -72,6 +73,7 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
             bids: teamBids,
             nilSuccess,
         },
+        scoreBreakdown: {},
     };
 }
 
@@ -123,6 +125,10 @@ function scoreRegularBids(
                 teamScores[numId] += bid * 10;
                 const bags = tricks - bid;
                 teamBags[numId] += bags;
+                // Overbid: each extra trick over bid is +1 point
+                if (bags > 0) {
+                    teamScores[numId] += bags;
+                }
                 applyBagsPenalty(numId, teamScores, teamBags, settings);
             } else {
                 // Failed bid
