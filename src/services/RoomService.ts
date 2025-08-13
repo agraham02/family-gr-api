@@ -9,6 +9,42 @@ const rooms: Map<string, Room> = new Map();
 const roomCodeToId: Map<string, string> = new Map();
 // Track socketId -> { roomId, userId }
 const socketToUser: Map<string, { roomId: string; userId: string }> = new Map();
+// Track scheduled deletions for empty rooms
+const roomDeletionTimers: Map<string, NodeJS.Timeout> = new Map();
+// Configurable TTL in minutes before deleting an empty room
+const ROOM_EMPTY_TTL_MINUTES: number = Number(
+    process.env.ROOM_EMPTY_TTL_MINUTES ?? 10
+);
+
+function scheduleRoomDeletionIfEmpty(roomId: string): void {
+    // Avoid double-scheduling
+    if (roomDeletionTimers.has(roomId)) return;
+    const ms = ROOM_EMPTY_TTL_MINUTES * 60 * 1000;
+    const timeout = setTimeout(() => {
+        const room = rooms.get(roomId);
+        // Only delete if it is still empty
+        if (room && room.users.length === 0) {
+            if (process.env.NODE_ENV !== "dev") {
+                rooms.delete(roomId);
+                roomCodeToId.forEach((id, code) => {
+                    if (id === roomId) roomCodeToId.delete(code);
+                });
+            }
+        }
+        roomDeletionTimers.delete(roomId);
+    }, ms);
+    roomDeletionTimers.set(roomId, timeout);
+    console.log("Timer started");
+}
+
+function cancelScheduledRoomDeletion(roomId: string): void {
+    const timeout = roomDeletionTimers.get(roomId);
+    if (timeout) {
+        clearTimeout(timeout);
+        roomDeletionTimers.delete(roomId);
+        console.log("Timeout canceled");
+    }
+}
 
 /**
  * Generates a unique 6-character alphanumeric room code.
@@ -77,6 +113,8 @@ export function joinRoom(
     if (!room) throw new Error("Room not found");
     if (room.state !== "lobby")
         throw new Error("Cannot join: game already started");
+    // If a deletion was scheduled (room had been empty), cancel it now
+    cancelScheduledRoomDeletion(room.id);
     const existingUser = room.users.find((u) => u.id === userId);
     if (existingUser) {
         console.log(`User ${userName} already in room ${room.id}`);
@@ -127,14 +165,9 @@ export function handleUserDisconnect(socketId: string): void {
     }
     // Emit event with username
     emitRoomEvent<{ userName?: string }>(room, "user_left", { userName });
-    // If room is empty, delete it
+    // If room is empty, schedule deletion after TTL
     if (room.users.length === 0) {
-        if (process.env.NODE_ENV !== "dev") {
-            rooms.delete(roomId);
-            roomCodeToId.forEach((id, code) => {
-                if (id === roomId) roomCodeToId.delete(code);
-            });
-        }
+        scheduleRoomDeletionIfEmpty(roomId);
     }
     socketToUser.delete(socketId);
 }
@@ -232,6 +265,10 @@ export function kickUser(
     emitRoomEvent<{ userId: string }>(room, "user_kicked", {
         userId: targetUserId,
     });
+    // If kicking resulted in an empty room, schedule deletion
+    if (room.users.length === 0) {
+        scheduleRoomDeletionIfEmpty(roomId);
+    }
 }
 
 export function setTeams(
@@ -316,6 +353,8 @@ export function closeRoom(roomId: string, userId: string): void {
     if (room.leaderId !== userId)
         throw new Error("Only the current leader can close the room");
 
+    // Clear any scheduled deletion before closing
+    cancelScheduledRoomDeletion(roomId);
     rooms.delete(roomId);
     emitRoomEvent(room, "room_closed");
 }
