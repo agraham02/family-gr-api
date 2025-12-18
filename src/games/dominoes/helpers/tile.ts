@@ -61,9 +61,14 @@ export function dealTilesToPlayers(
     );
 
     // Deal 7 tiles to each player (28 tiles total, 7 each)
-    tiles.slice(0, 28).forEach((tile, idx) => {
-        const playerId = playerIds[idx % 4];
-        hands[playerId].push(tile);
+    if (tiles.length < 28) {
+        throw new Error("Not enough tiles to deal to 4 players");
+    }
+    tiles.forEach((tile, idx) => {
+        if (idx < 28) {
+            const playerId = playerIds[idx % 4];
+            hands[playerId].push(tile);
+        }
     });
 
     // Sort each hand by left value, then right value

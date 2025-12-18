@@ -82,6 +82,8 @@ export function placeTileOnBoard(
     }
 
     // Determine the orientation of the tile based on which value matches
+    // Note: We flip the tile representation to maintain consistent board layout
+    // where the connecting value faces the board and new value faces outward
     let orientedTile = tile;
     let newEndValue: number;
 
@@ -90,7 +92,7 @@ export function placeTileOnBoard(
         newEndValue = tile.right;
     } else if (tile.right === end.value) {
         // Tile connects with its right side, so left side becomes the new end
-        // Flip the tile for consistent representation
+        // Create a flipped representation with the same ID for visual consistency
         orientedTile = { ...tile, left: tile.right, right: tile.left };
         newEndValue = tile.left;
     } else {

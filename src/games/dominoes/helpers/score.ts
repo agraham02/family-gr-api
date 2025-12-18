@@ -62,10 +62,9 @@ export function calculateRoundScores(
         if (pipCount < lowestPipCount) {
             lowestPipCount = pipCount;
             blockWinnerId = playerId;
-        } else if (pipCount === lowestPipCount && blockWinnerId) {
-            // In case of tie, first player in order wins (could be customized)
-            // For now, keep the first player found with lowest count
         }
+        // Note: In case of tie, the first player encountered with lowest count wins
+        // This follows standard dominoes rules where ties are broken by seat order
     }
 
     if (blockWinnerId) {

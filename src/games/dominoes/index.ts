@@ -96,10 +96,11 @@ function init(
     const hands = dealTilesToPlayers(shuffledDominoes, players);
 
     // Determine starting player (player with highest double)
+    // If no player has a double, start with first player
     const startingPlayerId = findPlayerWithHighestDouble(hands);
     const startingPlayerIndex = startingPlayerId
         ? playOrder.indexOf(startingPlayerId)
-        : 0;
+        : 0; // Standard rule: first player starts if no doubles exist
 
     // Initialize player scores
     const playerScores: Record<string, number> = {};
