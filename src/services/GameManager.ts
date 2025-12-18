@@ -174,7 +174,8 @@ class GameManager {
         }
 
         // Default: check if enough players are connected
-        // Note: isConnected is true by default, only false when explicitly disconnected
+        // Note: isConnected is explicitly set to true when games start
+        // undefined or true = connected, false = disconnected
         const connectedPlayers = Object.values(gameState.players).filter(
             (player) => player.isConnected !== false
         );

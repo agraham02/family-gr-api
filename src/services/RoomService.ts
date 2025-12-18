@@ -16,6 +16,13 @@ const ROOM_EMPTY_TTL_MINUTES: number = Number(
     process.env.ROOM_EMPTY_TTL_MINUTES ?? 10
 );
 
+/**
+ * Helper function to check if a room has an active game in progress.
+ */
+function isActiveGame(room: Room): boolean {
+    return room.state === "in-game" && room.gameId !== null;
+}
+
 function scheduleRoomDeletionIfEmpty(roomId: string): void {
     // Avoid double-scheduling
     if (roomDeletionTimers.has(roomId)) return;
@@ -76,7 +83,7 @@ export function registerSocketUser(
 
     // Check if this is a rejoin scenario (user exists but disconnected)
     const room = rooms.get(roomId);
-    if (room && room.state === "in-game" && room.gameId) {
+    if (room && isActiveGame(room)) {
         const user = room.users.find((u) => u.id === userId);
         if (user && user.isConnected === false) {
             // User is rejoining
@@ -152,7 +159,7 @@ export function joinRoom(
         console.log(`User ${userName} already in room ${room.id}`);
 
         // If game is active and user was disconnected, allow rejoin
-        if (room.state === "in-game" && existingUser.isConnected === false) {
+        if (isActiveGame(room) && existingUser.isConnected === false) {
             console.log(`User ${userName} rejoining active game in room ${room.id}`);
             // Connection will be handled in registerSocketUser
             return { room, user: existingUser };
@@ -163,7 +170,7 @@ export function joinRoom(
 
     // Don't allow new users to join if game is not in lobby
     if (room.state !== "lobby") {
-        throw new Error("Cannot join: room is not in lobby state");
+        throw new Error("Cannot join: game is already in progress");
     }
 
     const user: User = {
@@ -204,7 +211,7 @@ export function handleUserDisconnect(socketId: string): void {
     const userName = userLeaving ? userLeaving.name : undefined;
 
     // If game is active, mark user as disconnected instead of removing
-    if (room.state === "in-game" && room.gameId) {
+    if (isActiveGame(room)) {
         // Mark user as disconnected
         const user = room.users.find((u) => u.id === userId);
         if (user) {

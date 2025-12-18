@@ -173,7 +173,11 @@ socket.on('room_event', (payload) => {
 
 ### Connection Status Tracking
 
-- `User.isConnected`: Boolean flag indicating connection status (undefined or true = connected, false = disconnected)
+- `User.isConnected`: Boolean flag indicating connection status
+  - `true` = user is connected
+  - `false` = user is disconnected
+  - `undefined` = treated as connected (for backward compatibility)
+  - When games start, all users are explicitly set to `isConnected: true`
 - `Room.isPaused`: Boolean flag indicating if the game is paused due to disconnections
 
 ### Lobby vs In-Game Behavior
