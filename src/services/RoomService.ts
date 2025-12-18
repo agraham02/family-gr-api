@@ -65,6 +65,7 @@ async function generateUniqueRoomCode(): Promise<string> {
 
 /**
  * Register a socket connection to a user and room after REST join.
+ * Handles rejoin logic if user is already in the room.
  */
 export function registerSocketUser(
     socketId: string,
@@ -72,6 +73,35 @@ export function registerSocketUser(
     userId: string
 ): void {
     socketToUser.set(socketId, { roomId, userId });
+
+    // Check if this is a rejoin scenario (user exists but disconnected)
+    const room = rooms.get(roomId);
+    if (room && room.state === "in-game" && room.gameId) {
+        const user = room.users.find((u) => u.id === userId);
+        if (user && user.isConnected === false) {
+            // User is rejoining
+            user.isConnected = true;
+
+            // Notify GameManager about reconnection
+            gameManager.handlePlayerReconnect(room.gameId, userId);
+
+            // Check if game can be resumed
+            const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
+            if (hasMinPlayers && room.isPaused) {
+                room.isPaused = false;
+                emitRoomEvent<{ userName?: string }>(room, "game_resumed", {
+                    userName: user.name,
+                });
+            }
+
+            // Emit event about user reconnection
+            emitRoomEvent<{ userName?: string; userId: string }>(
+                room,
+                "user_reconnected",
+                { userName: user.name, userId }
+            );
+        }
+    }
 }
 
 export async function createRoom(
@@ -82,6 +112,7 @@ export async function createRoom(
     const user: User = {
         id: userId || uuidv4(),
         name: userName,
+        isConnected: true,
     };
 
     const room: Room = {
@@ -95,6 +126,7 @@ export async function createRoom(
         selectedGameType: "spades",
         gameId: null,
         createdAt: new Date(),
+        isPaused: false,
     };
 
     rooms.set(room.id, room);
@@ -111,20 +143,37 @@ export function joinRoom(
     const roomId = roomCodeToId.get(roomCode);
     const room = roomId ? rooms.get(roomId) : undefined;
     if (!room) throw new Error("Room not found");
-    if (room.state !== "lobby")
-        throw new Error("Cannot join: game already started");
+
     // If a deletion was scheduled (room had been empty), cancel it now
     cancelScheduledRoomDeletion(room.id);
+
     const existingUser = room.users.find((u) => u.id === userId);
     if (existingUser) {
         console.log(`User ${userName} already in room ${room.id}`);
 
+        // If game is active and user was disconnected, allow rejoin
+        if (room.state === "in-game" && existingUser.isConnected === false) {
+            console.log(`User ${userName} rejoining active game in room ${room.id}`);
+            // Connection will be handled in registerSocketUser
+            return { room, user: existingUser };
+        }
+
         return { room, user: existingUser };
     }
+
+    // Don't allow new users to join if game is in progress
+    if (room.state === "in-game") {
+        throw new Error("Cannot join: game already in progress");
+    }
+
+    // Original join logic for lobby
+    if (room.state !== "lobby")
+        throw new Error("Cannot join: game already started");
 
     const user: User = {
         id: userId || uuidv4(),
         name: userName,
+        isConnected: true,
     };
 
     room.users.push(user);
@@ -141,7 +190,8 @@ export function getRoom(roomId: string): Room | undefined {
 
 /**
  * Cleanup logic for when a socket disconnects.
- * Removes the user from their room, emits event, and deletes room if empty.
+ * During an active game, marks the user as disconnected instead of removing them.
+ * In lobby, removes the user completely.
  */
 export function handleUserDisconnect(socketId: string): void {
     const mapping = socketToUser.get(socketId);
@@ -153,22 +203,60 @@ export function handleUserDisconnect(socketId: string): void {
         return;
     }
 
-    // Find username before removal
+    // Find username before any changes
     const userLeaving = room.users.find((u) => u.id === userId);
     const userName = userLeaving ? userLeaving.name : undefined;
-    // Remove user from room
-    room.users = room.users.filter((u) => u.id !== userId);
-    delete room.readyStates[userId];
-    // If user was leader, assign new leader if possible
-    if (room.leaderId === userId && room.users.length > 0) {
-        room.leaderId = room.users[0].id;
+
+    // If game is active, mark user as disconnected instead of removing
+    if (room.state === "in-game" && room.gameId) {
+        // Mark user as disconnected
+        const user = room.users.find((u) => u.id === userId);
+        if (user) {
+            user.isConnected = false;
+        }
+
+        // Notify GameManager about disconnection
+        gameManager.handlePlayerDisconnect(room.gameId, userId);
+
+        // Check if game should be paused
+        const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
+        if (!hasMinPlayers) {
+            room.isPaused = true;
+            emitRoomEvent<{ userName?: string; reason: string }>(
+                room,
+                "game_paused",
+                {
+                    userName,
+                    reason: "waiting_for_players",
+                }
+            );
+        }
+
+        // Emit event about user disconnection
+        emitRoomEvent<{ userName?: string; userId: string }>(
+            room,
+            "user_disconnected",
+            { userName, userId }
+        );
+    } else {
+        // In lobby or ended state, remove user completely
+        room.users = room.users.filter((u) => u.id !== userId);
+        delete room.readyStates[userId];
+
+        // If user was leader, assign new leader if possible
+        if (room.leaderId === userId && room.users.length > 0) {
+            room.leaderId = room.users[0].id;
+        }
+
+        // Emit event with username
+        emitRoomEvent<{ userName?: string }>(room, "user_left", { userName });
+
+        // If room is empty, schedule deletion after TTL
+        if (room.users.length === 0) {
+            scheduleRoomDeletionIfEmpty(roomId);
+        }
     }
-    // Emit event with username
-    emitRoomEvent<{ userName?: string }>(room, "user_left", { userName });
-    // If room is empty, schedule deletion after TTL
-    if (room.users.length === 0) {
-        scheduleRoomDeletionIfEmpty(roomId);
-    }
+
     socketToUser.delete(socketId);
 }
 
@@ -337,10 +425,16 @@ export function startGame(
     if (Object.values(room.readyStates).some((ready) => !ready))
         throw new Error("Not all players are ready");
 
+    // Mark all users as connected when starting the game
+    room.users.forEach((user) => {
+        user.isConnected = true;
+    });
+
     // Create game instance
     const gameId = gameManager.createGame(gameType, room, customSettings);
     room.state = "in-game";
     room.gameId = gameId;
+    room.isPaused = false;
 
     // Optionally, emit initial game state
     const gameState = gameManager.getGame(gameId);

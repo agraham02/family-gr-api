@@ -7,6 +7,9 @@ export interface GameModule {
     reducer(state: GameState, action: GameAction): GameState;
     getState(state: GameState): any;
     getPlayerState(state: GameState, userId: string): any;
+    checkMinimumPlayers?(state: GameState): boolean; // Optional: Check if enough players are connected
+    handlePlayerReconnect?(state: GameState, userId: string): GameState; // Optional: Handle player reconnection
+    handlePlayerDisconnect?(state: GameState, userId: string): GameState; // Optional: Handle player disconnection
     metadata: {
         type: string;
         displayName: string;
@@ -118,6 +121,63 @@ class GameManager {
 
     removeGame(gameId: string): void {
         this.games.delete(gameId);
+    }
+
+    handlePlayerDisconnect(gameId: string | null, userId: string): void {
+        if (!gameId) return;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return;
+        const module = this.modules.get(gameState.type);
+        if (!module) return;
+
+        // Update player connection status
+        if (gameState.players[userId]) {
+            gameState.players[userId].isConnected = false;
+        }
+
+        // Call module-specific disconnect handler if available
+        if (module.handlePlayerDisconnect) {
+            const newState = module.handlePlayerDisconnect(gameState, userId);
+            this.games.set(gameId, newState);
+        }
+    }
+
+    handlePlayerReconnect(gameId: string | null, userId: string): void {
+        if (!gameId) return;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return;
+        const module = this.modules.get(gameState.type);
+        if (!module) return;
+
+        // Update player connection status
+        if (gameState.players[userId]) {
+            gameState.players[userId].isConnected = true;
+        }
+
+        // Call module-specific reconnect handler if available
+        if (module.handlePlayerReconnect) {
+            const newState = module.handlePlayerReconnect(gameState, userId);
+            this.games.set(gameId, newState);
+        }
+    }
+
+    checkMinimumPlayers(gameId: string | null): boolean {
+        if (!gameId) return false;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return false;
+        const module = this.modules.get(gameState.type);
+        if (!module) return false;
+
+        // If module has custom check, use it
+        if (module.checkMinimumPlayers) {
+            return module.checkMinimumPlayers(gameState);
+        }
+
+        // Default: check if enough players are connected
+        const connectedPlayers = Object.values(gameState.players).filter(
+            (player) => player.isConnected !== false
+        );
+        return connectedPlayers.length >= module.metadata.minPlayers;
     }
 }
 

@@ -13,4 +13,5 @@ export interface Room {
     createdAt: Date;
     teams?: string[][]; // Array of teams, each team is an array of userIds
     settings?: Record<string, any>; // Additional settings for the room
+    isPaused?: boolean; // Track if game is paused due to disconnections
 }

@@ -271,6 +271,9 @@ export const spadesModule: GameModule = {
     reducer,
     getState,
     getPlayerState,
+    checkMinimumPlayers,
+    handlePlayerReconnect,
+    handlePlayerDisconnect,
     metadata: SPADES_METADATA,
 };
 
@@ -499,4 +502,61 @@ function logHistory(state: SpadesState, action: GameAction): void {
     state.history.push(
         `Action: ${action.type}, Player: ${action.userId}, Payload: ${JSON.stringify(action.payload)}`
     );
+}
+
+/**
+ * Check if the game has minimum players connected to continue.
+ * For Spades, all 4 players must be connected to play.
+ */
+function checkMinimumPlayers(state: SpadesState): boolean {
+    const connectedPlayers = Object.values(state.players).filter(
+        (player) => player.isConnected !== false
+    );
+    return connectedPlayers.length >= SPADES_TOTAL_PLAYERS;
+}
+
+/**
+ * Handle player reconnection.
+ * For Spades, no special state changes needed - just update connection status.
+ */
+function handlePlayerReconnect(
+    state: SpadesState,
+    userId: string
+): SpadesState {
+    if (state.players[userId]) {
+        return {
+            ...state,
+            players: {
+                ...state.players,
+                [userId]: {
+                    ...state.players[userId],
+                    isConnected: true,
+                },
+            },
+        };
+    }
+    return state;
+}
+
+/**
+ * Handle player disconnection.
+ * For Spades, mark player as disconnected but keep their state intact.
+ */
+function handlePlayerDisconnect(
+    state: SpadesState,
+    userId: string
+): SpadesState {
+    if (state.players[userId]) {
+        return {
+            ...state,
+            players: {
+                ...state.players,
+                [userId]: {
+                    ...state.players[userId],
+                    isConnected: false,
+                },
+            },
+        };
+    }
+    return state;
 }
