@@ -516,6 +516,7 @@ function logHistory(state: SpadesState, action: GameAction): void {
 /**
  * Check if the game has minimum players connected to continue.
  * For Spades, all 4 players must be connected to play.
+ * Note: isConnected is true by default, only false when explicitly disconnected.
  */
 function checkMinimumPlayers(state: SpadesState): boolean {
     const connectedPlayers = Object.values(state.players).filter(

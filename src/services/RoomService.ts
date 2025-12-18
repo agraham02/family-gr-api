@@ -161,14 +161,10 @@ export function joinRoom(
         return { room, user: existingUser };
     }
 
-    // Don't allow new users to join if game is in progress
-    if (room.state === "in-game") {
-        throw new Error("Cannot join: game already in progress");
+    // Don't allow new users to join if game is not in lobby
+    if (room.state !== "lobby") {
+        throw new Error("Cannot join: room is not in lobby state");
     }
-
-    // Original join logic for lobby
-    if (room.state !== "lobby")
-        throw new Error("Cannot join: game already started");
 
     const user: User = {
         id: userId || uuidv4(),
