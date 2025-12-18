@@ -4,7 +4,7 @@
 
 ## Games
 
-[ ] implement rejoin logic
+[x] implement rejoin logic
 
 ### Spades
 
