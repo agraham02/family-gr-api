@@ -214,9 +214,13 @@ export function handleUserDisconnect(socketId: string): void {
     if (isActiveGame(room)) {
         // Mark user as disconnected
         const user = room.users.find((u) => u.id === userId);
-        if (user) {
-            user.isConnected = false;
+        if (!user) {
+            // User not found in room, just clean up socket mapping
+            socketToUser.delete(socketId);
+            return;
         }
+
+        user.isConnected = false;
 
         // Notify GameManager about disconnection
         gameManager.handlePlayerDisconnect(room.gameId, userId);
