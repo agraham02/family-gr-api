@@ -300,6 +300,10 @@ function handlePlaceBid(
     if (!state.playOrder.some((pid) => pid === playerId)) {
         throw new Error("Invalid player ID for this game.");
     }
+    // Check if player is connected
+    if (state.players[playerId]?.isConnected === false) {
+        throw new Error("Player is disconnected and cannot place a bid.");
+    }
     // Validate bid (basic: must be a number, >= 0)
     if (typeof bid.amount !== "number" || bid.amount < 0) {
         throw new Error("Bid amount must be a non-negative number.");
@@ -337,7 +341,12 @@ function handlePlayCard(
         throw new Error("Not your turn to play a card.");
     }
 
-    // 3. Validate card is in hand
+    // 3. Check if player is connected
+    if (state.players[playerId]?.isConnected === false) {
+        throw new Error("Player is disconnected and cannot play a card.");
+    }
+
+    // 4. Validate card is in hand
     const playerHand = state.hands[playerId] || [];
     const cardIdx = playerHand.findIndex(
         (c) => c.suit === card.suit && c.rank === card.rank
@@ -346,7 +355,7 @@ function handlePlayCard(
         throw new Error("Card not in player's hand.");
     }
 
-    // 4. Validate play is legal (follow suit, spades broken, etc.)
+    // 5. Validate play is legal (follow suit, spades broken, etc.)
     const trick = state.currentTrick || {
         leaderId: playerId,
         plays: [],
@@ -358,12 +367,12 @@ function handlePlayCard(
         );
     }
 
-    // 5. Remove card from hand
+    // 6. Remove card from hand
     const newHand = [...playerHand];
     newHand.splice(cardIdx, 1);
     const newHands = { ...state.hands, [playerId]: newHand };
 
-    // 6. Add play to trick
+    // 7. Add play to trick
     const isFirstPlay = trick.plays.length === 0;
     const leadSuit = isFirstPlay ? card.suit : trick.leadSuit;
     const newTrick: Trick = {
@@ -372,7 +381,7 @@ function handlePlayCard(
         leadSuit: leadSuit || null,
     };
 
-    // 7. Update spadesBroken if a spade is played (and not the first trick)
+    // 8. Update spadesBroken if a spade is played (and not the first trick)
     const spadesBroken =
         state.spadesBroken ||
         (card.suit === "Spades" &&
@@ -382,7 +391,7 @@ function handlePlayCard(
                 trick.leadSuit === null
             ));
 
-    // 8. If trick is complete, resolve winner and show result
+    // 9. If trick is complete, resolve winner and show result
     let newCurrentTrick: Trick | null = newTrick;
     let newCompletedTricks = state.completedTricks;
     let newCurrentTurnIndex = nextPlayerIndex(state);

@@ -169,6 +169,11 @@ function startServer() {
                     if (!room) {
                         throw new Error("Room not found");
                     }
+                    if (room.isPaused) {
+                        throw new Error(
+                            "Game is paused. Waiting for players to rejoin."
+                        );
+                    }
                     const gameId = room.gameId ?? null;
                     gameManager.dispatch(gameId, action);
                     emitGameEvent(room, "sync");
