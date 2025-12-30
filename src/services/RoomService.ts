@@ -22,6 +22,12 @@ const reconnectTimeoutTimers: Map<string, NodeJS.Timeout> = new Map();
 const RECONNECT_TIMEOUT_MINUTES: number = Number(
     process.env.RECONNECT_TIMEOUT_MINUTES ?? 5
 );
+// Track lobby disconnect grace period timers (key: "roomId:userId" -> timeout)
+const lobbyDisconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+// Grace period in seconds before removing a disconnected user from lobby
+const LOBBY_DISCONNECT_GRACE_SECONDS: number = Number(
+    process.env.LOBBY_DISCONNECT_GRACE_SECONDS ?? 30
+);
 
 /**
  * Helper function to check if a room has an active game in progress.
@@ -90,6 +96,82 @@ function cancelReconnectTimeout(roomId: string): void {
 }
 
 /**
+ * Schedule removal of a user from lobby after grace period.
+ * If they reconnect within the grace period, the timer is canceled.
+ */
+function scheduleLobbyDisconnectRemoval(
+    roomId: string,
+    userId: string,
+    userName?: string
+): void {
+    const timerKey = `${roomId}:${userId}`;
+    // Avoid double-scheduling
+    if (lobbyDisconnectTimers.has(timerKey)) return;
+
+    const ms = LOBBY_DISCONNECT_GRACE_SECONDS * 1000;
+    const timeout = setTimeout(() => {
+        const room = rooms.get(roomId);
+        if (!room) {
+            lobbyDisconnectTimers.delete(timerKey);
+            return;
+        }
+
+        // Only remove if user is still disconnected
+        const user = room.users.find((u) => u.id === userId);
+        if (user && user.isConnected === false) {
+            room.users = room.users.filter((u) => u.id !== userId);
+            delete room.readyStates[userId];
+
+            // If user was leader, assign new leader if possible
+            if (room.leaderId === userId && room.users.length > 0) {
+                room.leaderId = room.users[0].id;
+                emitRoomEvent<{ newLeaderId: string; newLeaderName: string }>(
+                    room,
+                    "leader_promoted",
+                    {
+                        newLeaderId: room.users[0].id,
+                        newLeaderName: room.users[0].name,
+                    }
+                );
+            }
+
+            emitRoomEvent<{ userName?: string }>(room, "user_left", {
+                userName,
+            });
+
+            // If room is empty, schedule deletion after TTL
+            if (room.users.length === 0) {
+                scheduleRoomDeletionIfEmpty(roomId);
+            }
+
+            console.log(
+                `User ${userName} removed from lobby after grace period`
+            );
+        }
+
+        lobbyDisconnectTimers.delete(timerKey);
+    }, ms);
+
+    lobbyDisconnectTimers.set(timerKey, timeout);
+    console.log(
+        `Lobby disconnect timer started for user ${userName} (${LOBBY_DISCONNECT_GRACE_SECONDS}s)`
+    );
+}
+
+/**
+ * Cancel a pending lobby disconnect removal timer.
+ */
+function cancelLobbyDisconnectRemoval(roomId: string, userId: string): void {
+    const timerKey = `${roomId}:${userId}`;
+    const timeout = lobbyDisconnectTimers.get(timerKey);
+    if (timeout) {
+        clearTimeout(timeout);
+        lobbyDisconnectTimers.delete(timerKey);
+        console.log(`Lobby disconnect timer canceled for user ${userId}`);
+    }
+}
+
+/**
  * Abort a game due to reconnection timeout expiry.
  * Sets room state to ended and notifies all clients.
  */
@@ -142,7 +224,7 @@ async function generateUniqueRoomCode(): Promise<string> {
 
 /**
  * Register a socket connection to a user and room after REST join.
- * Handles rejoin logic if user is already in the room.
+ * Handles rejoin logic if user is already in the room (both lobby and in-game).
  */
 export function registerSocketUser(
     socketId: string,
@@ -153,13 +235,18 @@ export function registerSocketUser(
 
     // Check if this is a rejoin scenario (user exists but disconnected)
     const room = rooms.get(roomId);
-    if (room && isActiveGame(room)) {
-        const user = room.users.find((u) => u.id === userId);
-        if (user && user.isConnected === false) {
-            // User is rejoining
-            user.isConnected = true;
+    if (!room) return;
 
-            // Notify GameManager about reconnection
+    const user = room.users.find((u) => u.id === userId);
+    if (!user) return;
+
+    // Handle rejoin for both lobby and in-game states
+    if (user.isConnected === false) {
+        // User is rejoining
+        user.isConnected = true;
+
+        if (isActiveGame(room)) {
+            // In-game rejoin
             gameManager.handlePlayerReconnect(room.gameId, userId);
 
             // Check if game can be resumed
@@ -179,6 +266,18 @@ export function registerSocketUser(
                 "user_reconnected",
                 { userName: user.name, userId }
             );
+        } else {
+            // Lobby rejoin - cancel the scheduled removal
+            cancelLobbyDisconnectRemoval(roomId, userId);
+
+            // Emit reconnection event
+            emitRoomEvent<{ userName?: string; userId: string }>(
+                room,
+                "user_reconnected",
+                { userName: user.name, userId }
+            );
+
+            console.log(`User ${user.name} reconnected to lobby`);
         }
     }
 }
@@ -230,13 +329,18 @@ export function joinRoom(
     if (existingUser) {
         console.log(`User ${userName} already in room ${room.id}`);
 
-        // If game is active and user was disconnected, allow rejoin
-        if (isActiveGame(room) && existingUser.isConnected === false) {
+        // If user was disconnected, mark them as connected and cancel removal timer
+        if (existingUser.isConnected === false) {
+            existingUser.isConnected = true;
+            cancelLobbyDisconnectRemoval(room.id, existingUser.id);
+            console.log(`User ${userName} rejoining room ${room.id}`);
+        }
+
+        // If game is active, log it (connection will be handled in registerSocketUser)
+        if (isActiveGame(room)) {
             console.log(
                 `User ${userName} rejoining active game in room ${room.id}`
             );
-            // Connection will be handled in registerSocketUser
-            return { room, user: existingUser };
         }
 
         return { room, user: existingUser };
@@ -345,21 +449,20 @@ export function handleUserDisconnect(socketId: string): void {
             { userName, userId }
         );
     } else {
-        // In lobby or ended state, remove user completely
-        room.users = room.users.filter((u) => u.id !== userId);
-        delete room.readyStates[userId];
+        // In lobby or ended state, mark user as disconnected and schedule removal after grace period
+        const user = room.users.find((u) => u.id === userId);
+        if (user) {
+            user.isConnected = false;
 
-        // If user was leader, assign new leader if possible
-        if (room.leaderId === userId && room.users.length > 0) {
-            room.leaderId = room.users[0].id;
-        }
+            // Schedule removal after grace period (allows time for refresh/reconnect)
+            scheduleLobbyDisconnectRemoval(roomId, userId, userName);
 
-        // Emit event with username
-        emitRoomEvent<{ userName?: string }>(room, "user_left", { userName });
-
-        // If room is empty, schedule deletion after TTL
-        if (room.users.length === 0) {
-            scheduleRoomDeletionIfEmpty(roomId);
+            // Emit disconnection event so other clients know
+            emitRoomEvent<{ userName?: string; userId: string }>(
+                room,
+                "user_disconnected",
+                { userName, userId }
+            );
         }
     }
 
