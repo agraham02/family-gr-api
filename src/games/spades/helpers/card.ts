@@ -5,6 +5,7 @@
 import { SpadesState } from "..";
 import { User } from "../../../models/User";
 import { GamePlayers } from "../../../services/GameManager";
+import { shuffle } from "../../shared";
 import { Card, Rank, Suit } from "../types";
 
 /* ––––––––––––––––––––– CONSTANTS ––––––––––––––––––––– */
@@ -36,19 +37,13 @@ export function buildDeck(): Card[] {
 }
 
 /**
- * Fisher–Yates shuffle (unbiased, O(n)).
- * Keep randomness *only* here so the rest of the engine is replayable.
+ * Shuffle a deck of cards using shared Fisher-Yates implementation.
  */
 export function shuffleDeck(
     deck: Card[],
     rng: () => number = Math.random
 ): Card[] {
-    const copy = [...deck];
-    for (let i = copy.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [copy[i], copy[j]] = [copy[j], copy[i]];
-    }
-    return copy;
+    return shuffle(deck, rng);
 }
 
 /**

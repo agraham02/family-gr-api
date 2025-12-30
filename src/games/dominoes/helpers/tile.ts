@@ -2,6 +2,7 @@
 
 import { Tile } from "../types";
 import { GamePlayers } from "../../../services/GameManager";
+import { shuffle } from "../../shared";
 
 /**
  * Generate a standard double-six domino set (28 tiles)
@@ -25,18 +26,13 @@ export function buildDominoSet(): Tile[] {
 }
 
 /**
- * Fisher-Yates shuffle for tiles
+ * Shuffle tiles using shared Fisher-Yates implementation.
  */
 export function shuffleTiles(
     tiles: Tile[],
     rng: () => number = Math.random
 ): Tile[] {
-    const copy = [...tiles];
-    for (let i = copy.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [copy[i], copy[j]] = [copy[j], copy[i]];
-    }
-    return copy;
+    return shuffle(tiles, rng);
 }
 
 /**
@@ -122,10 +118,7 @@ export function findPlayerWithHighestDouble(
     for (const [playerId, hand] of Object.entries(hands)) {
         const playerHighest = getHighestDouble(hand);
         if (playerHighest) {
-            if (
-                !highestDouble ||
-                playerHighest.left > highestDouble.left
-            ) {
+            if (!highestDouble || playerHighest.left > highestDouble.left) {
                 highestDouble = playerHighest;
                 playerWithHighest = playerId;
             }

@@ -30,6 +30,11 @@ import {
     checkWinCondition,
     getHandPipCount,
 } from "./helpers/score";
+import {
+    handlePlayerReconnect,
+    handlePlayerDisconnect,
+    checkAllPlayersConnected,
+} from "../shared";
 
 const DOMINOES_NAME = "dominoes";
 const DOMINOES_DISPLAY_NAME = "Dominoes";
@@ -38,6 +43,8 @@ const DOMINOES_TOTAL_PLAYERS = 4;
 const DOMINOES_METADATA = {
     type: DOMINOES_NAME,
     displayName: DOMINOES_DISPLAY_NAME,
+    description:
+        "Classic Caribbean-style dominoes. Be the first to play all your tiles or have the lowest pip count when blocked!",
     requiresTeams: false, // Individual play
     minPlayers: DOMINOES_TOTAL_PLAYERS,
     maxPlayers: DOMINOES_TOTAL_PLAYERS,
@@ -45,10 +52,12 @@ const DOMINOES_METADATA = {
 
 export interface DominoesSettings extends GameSettings {
     winTarget: number; // Score needed to win (default 100)
+    drawFromBoneyard: boolean; // Allow drawing tiles instead of passing
 }
 
 const DEFAULT_SETTINGS: DominoesSettings = {
     winTarget: 100,
+    drawFromBoneyard: false, // Disabled by default (block dominoes style)
 };
 
 export interface DominoesState extends GameState {
@@ -67,6 +76,7 @@ export interface DominoesState extends GameState {
     playerScores: Record<string, number>; // Individual scores
     roundPipCounts?: Record<string, number>; // Pip counts at end of round
     roundWinner?: string | null; // Winner of the current round
+    isRoundTie?: boolean; // True if round ended in a tie (blocked game, multiple lowest pip counts)
 
     gameWinner?: string; // Overall game winner
     history: string[]; // Action history for debugging
@@ -316,20 +326,22 @@ function endRound(
     state: DominoesState,
     winnerId: string | null
 ): DominoesState {
-    const { scores, pipCounts, roundWinner } = calculateRoundScores(
+    const { scores, pipCounts, roundWinner, isTie } = calculateRoundScores(
         state.hands,
         state.playerScores,
         winnerId
     );
 
     // Check if anyone has reached the win target
-    const gameWinner = checkWinCondition(scores, state.settings.winTarget);
+    const gameWinner =
+        checkWinCondition(scores, state.settings.winTarget) ?? undefined;
 
     return {
         ...state,
         playerScores: scores,
         roundPipCounts: pipCounts,
         roundWinner,
+        isRoundTie: isTie,
         gameWinner,
         phase: gameWinner ? "finished" : "round-summary",
     };
@@ -365,6 +377,7 @@ function startNextRound(state: DominoesState): DominoesState {
         consecutivePasses: 0,
         roundPipCounts: undefined,
         roundWinner: undefined,
+        isRoundTie: undefined,
     };
 }
 
@@ -383,52 +396,5 @@ function logHistory(state: DominoesState, action: GameAction): void {
  * For Dominoes, all 4 players must be connected to play.
  */
 function checkMinimumPlayers(state: DominoesState): boolean {
-    const connectedPlayers = Object.values(state.players).filter(
-        (player) => player.isConnected !== false
-    );
-    return connectedPlayers.length >= DOMINOES_TOTAL_PLAYERS;
-}
-
-/**
- * Handle player reconnection.
- */
-function handlePlayerReconnect(
-    state: DominoesState,
-    userId: string
-): DominoesState {
-    if (state.players[userId]) {
-        return {
-            ...state,
-            players: {
-                ...state.players,
-                [userId]: {
-                    ...state.players[userId],
-                    isConnected: true,
-                },
-            },
-        };
-    }
-    return state;
-}
-
-/**
- * Handle player disconnection.
- */
-function handlePlayerDisconnect(
-    state: DominoesState,
-    userId: string
-): DominoesState {
-    if (state.players[userId]) {
-        return {
-            ...state,
-            players: {
-                ...state.players,
-                [userId]: {
-                    ...state.players[userId],
-                    isConnected: false,
-                },
-            },
-        };
-    }
-    return state;
+    return checkAllPlayersConnected(state, DOMINOES_TOTAL_PLAYERS);
 }

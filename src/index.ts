@@ -25,6 +25,7 @@ import {
     emitPlayerGameEvent,
     setGameSocketServer,
 } from "./webhooks/gameWebhooks";
+import { socketRateLimiter } from "./utils/rateLimiter";
 
 dotenv.config();
 
@@ -56,6 +57,31 @@ function startServer() {
     io.on("connection", (socket) => {
         // Client should join a room by roomId after connecting
         console.log(`New client connected: ${socket.id}`);
+
+        // Rate limiting middleware for all socket events
+        socket.use(([event, ...args], next) => {
+            // Skip rate limiting for disconnect-related events
+            if (event === "disconnect" || event === "disconnecting") {
+                return next();
+            }
+
+            const { allowed, remaining } = socketRateLimiter.consume(socket.id);
+            if (!allowed) {
+                console.warn(
+                    `Rate limit exceeded for socket ${socket.id} on event ${event}`
+                );
+                socket.emit("error", {
+                    error: "Rate limit exceeded. Please slow down.",
+                });
+                return; // Don't call next() - drop the event
+            }
+            next();
+        });
+
+        // Clean up rate limiter entry when socket disconnects
+        socket.on("disconnect", () => {
+            socketRateLimiter.remove(socket.id);
+        });
 
         socket.on("join_room", ({ roomId, userId }) => {
             try {

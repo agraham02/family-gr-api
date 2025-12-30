@@ -19,6 +19,11 @@ import { omitFields } from "../../utils/omitFields";
 import { canPlayCard, resolveTrick } from "./helpers/player";
 import { User } from "../../models/User";
 import { calculateSpadesScores } from "./helpers/score";
+import {
+    handlePlayerReconnect,
+    handlePlayerDisconnect,
+    checkAllPlayersConnected,
+} from "../shared";
 
 const SPADES_NAME = "spades";
 const SPADES_DISPLAY_NAME = "Spades";
@@ -32,6 +37,8 @@ const SPADES_TOTAL_PLAYERS =
 const SPADES_METADATA = {
     type: SPADES_NAME,
     displayName: SPADES_DISPLAY_NAME,
+    description:
+        "A trick-taking card game played in teams of two. Bid on how many tricks you'll win, then play to make your bid!",
     requiresTeams: true,
     minPlayers: SPADES_TOTAL_PLAYERS,
     maxPlayers: SPADES_TOTAL_PLAYERS,
@@ -50,12 +57,14 @@ interface InitSeed {
 export interface SpadesSettings extends GameSettings {
     allowNil: boolean;
     bagsPenalty: number;
+    blindNilEnabled: boolean; // Allow blind nil bids (+200/-200)
 }
 
 const DEFAULT_SETTINGS: SpadesSettings = {
     allowNil: true,
     bagsPenalty: -100,
     winTarget: 500,
+    blindNilEnabled: false, // Disabled by default (advanced feature)
 };
 
 interface Team {
@@ -304,9 +313,9 @@ function handlePlaceBid(
     if (state.players[playerId]?.isConnected === false) {
         throw new Error("Player is disconnected and cannot place a bid.");
     }
-    // Validate bid (basic: must be a number, >= 0)
-    if (typeof bid.amount !== "number" || bid.amount < 0) {
-        throw new Error("Bid amount must be a non-negative number.");
+    // Validate bid (must be a number between 0 and 13, as there are only 13 tricks possible)
+    if (typeof bid.amount !== "number" || bid.amount < 0 || bid.amount > 13) {
+        throw new Error("Bid amount must be between 0 and 13.");
     }
     // Prevent duplicate bids
     if (state.bids[playerId]) {
@@ -442,10 +451,49 @@ function handlePlayCard(
             // Calculate team scores for the round
             const roundTeamScores: Record<number, number> = {};
             Object.keys(teamScores).forEach((teamId) => {
-                roundTeamScores[Number(teamId)] =
-                    scoreBreakdown[teamId]?.roundScore ??
-                    teamScores[Number(teamId)];
+                const numericTeamId = Number(teamId);
+                roundTeamScores[numericTeamId] =
+                    scoreBreakdown[numericTeamId]?.roundScore ??
+                    teamScores[numericTeamId];
             });
+
+            // Check for win condition - has any team reached winTarget?
+            const winTarget = state.settings.winTarget;
+            const teamsAtOrAboveTarget = Object.entries(teamScores)
+                .filter(([, score]) => score >= winTarget)
+                .map(([teamId, score]) => ({ teamId: Number(teamId), score }));
+
+            let finalPhase: SpadesPhases = "round-summary";
+            let winnerTeamId: number | undefined = undefined;
+            let isTie: boolean | undefined = undefined;
+
+            if (teamsAtOrAboveTarget.length > 0) {
+                // At least one team has reached the win target
+                if (teamsAtOrAboveTarget.length === 1) {
+                    // Clear winner
+                    finalPhase = "finished";
+                    winnerTeamId = teamsAtOrAboveTarget[0].teamId;
+                } else {
+                    // Multiple teams at or above target - check for tie
+                    const maxScore = Math.max(
+                        ...teamsAtOrAboveTarget.map((t) => t.score)
+                    );
+                    const teamsWithMaxScore = teamsAtOrAboveTarget.filter(
+                        (t) => t.score === maxScore
+                    );
+
+                    if (teamsWithMaxScore.length === 1) {
+                        // Higher score wins
+                        finalPhase = "finished";
+                        winnerTeamId = teamsWithMaxScore[0].teamId;
+                    } else {
+                        // Exact tie - both teams have same score at or above target
+                        finalPhase = "finished";
+                        isTie = true;
+                    }
+                }
+            }
+
             // Set round summary phase and expose breakdowns
             return {
                 ...state,
@@ -454,7 +502,7 @@ function handlePlayCard(
                 completedTricks: newCompletedTricks,
                 spadesBroken,
                 currentTurnIndex: newCurrentTurnIndex,
-                phase: "round-summary",
+                phase: finalPhase,
                 teams: {
                     ...state.teams,
                     ...Object.keys(teamScores).reduce(
@@ -468,8 +516,8 @@ function handlePlayCard(
                         {} as Record<number, Team>
                     ),
                 },
-                winnerTeamId: undefined,
-                isTie: undefined,
+                winnerTeamId,
+                isTie,
                 lastTrickWinnerId: undefined,
                 lastTrickWinningCard: undefined,
                 roundTrickCounts,
@@ -516,58 +564,7 @@ function logHistory(state: SpadesState, action: GameAction): void {
 /**
  * Check if the game has minimum players connected to continue.
  * For Spades, all 4 players must be connected to play.
- * Note: This implementation is explicit for clarity, though it matches the default.
- * isConnected: undefined or true = connected, false = disconnected
  */
 function checkMinimumPlayers(state: SpadesState): boolean {
-    const connectedPlayers = Object.values(state.players).filter(
-        (player) => player.isConnected !== false
-    );
-    return connectedPlayers.length >= SPADES_TOTAL_PLAYERS;
-}
-
-/**
- * Handle player reconnection.
- * For Spades, no special state changes needed - just update connection status.
- */
-function handlePlayerReconnect(
-    state: SpadesState,
-    userId: string
-): SpadesState {
-    if (state.players[userId]) {
-        return {
-            ...state,
-            players: {
-                ...state.players,
-                [userId]: {
-                    ...state.players[userId],
-                    isConnected: true,
-                },
-            },
-        };
-    }
-    return state;
-}
-
-/**
- * Handle player disconnection.
- * For Spades, mark player as disconnected but keep their state intact.
- */
-function handlePlayerDisconnect(
-    state: SpadesState,
-    userId: string
-): SpadesState {
-    if (state.players[userId]) {
-        return {
-            ...state,
-            players: {
-                ...state.players,
-                [userId]: {
-                    ...state.players[userId],
-                    isConnected: false,
-                },
-            },
-        };
-    }
-    return state;
+    return checkAllPlayersConnected(state, SPADES_TOTAL_PLAYERS);
 }

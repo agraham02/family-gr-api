@@ -1,4 +1,19 @@
-import { SpadesState, Trick } from "../index";
+import { SpadesState, Trick, SpadesSettings } from "../index";
+import { Bid } from "../types";
+
+interface TeamScoreBreakdown {
+    previousScore: number;
+    tricksWon: number;
+    bid: number;
+    basePoints: number; // bid * 10 (or negative if failed)
+    bags: number; // overtricks this round
+    bagPoints: number; // +1 per bag
+    bagPenalty: number; // -100 if accumulated 10+ bags
+    nilBonus: number; // +100 per successful nil
+    nilPenalty: number; // -100 per failed nil
+    roundScore: number; // total points gained/lost this round
+    newScore: number; // final score after round
+}
 
 interface ScoreResult {
     teamScores: Record<number, number>;
@@ -8,36 +23,48 @@ interface ScoreResult {
         bids: Record<number, number>;
         nilSuccess: Record<number, boolean>;
     };
-    scoreBreakdown: Record<string, any>; // Detailed breakdown of scores
+    scoreBreakdown: Record<number, TeamScoreBreakdown>;
 }
 
 /**
  * Calculates scores for a completed Spades round.
  * @param state The SpadesState at end of round
- * @returns ScoreResult with team scores and bags
+ * @returns ScoreResult with team scores, bags, and detailed breakdown
  */
 export function calculateSpadesScores(state: SpadesState): ScoreResult {
     const { teams, completedTricks, bids, settings } = state;
-    const tricksWon: Record<number, number> = {};
-    const teamBags: Record<number, number> = {};
-    const teamScores: Record<number, number> = {};
-    const nilSuccess: Record<number, boolean> = {};
-    const teamBids: Record<number, number> = {};
 
-    // Count tricks per team
-    Object.keys(teams).forEach((teamId) => {
-        tricksWon[Number(teamId)] = 0;
-        teamBags[Number(teamId)] = 0;
-        teamScores[Number(teamId)] = teams[Number(teamId)].score;
-        teamBids[Number(teamId)] = 0;
-    });
+    // Initialize per-team tracking
+    const tricksWon: Record<number, number> = {};
+    const teamBids: Record<number, number> = {};
+    const nilSuccess: Record<number, boolean> = {};
+    const scoreBreakdown: Record<number, TeamScoreBreakdown> = {};
 
     // Map player to team
     const playerTeam: Record<string, number> = {};
     Object.entries(teams).forEach(([teamId, team]) => {
-        team.players.forEach((pid) => {
-            playerTeam[pid] = Number(teamId);
-        });
+        const numId = Number(teamId);
+        playerTeam[team.players[0]] = numId;
+        playerTeam[team.players[1]] = numId;
+
+        tricksWon[numId] = 0;
+        teamBids[numId] = 0;
+        nilSuccess[numId] = true; // Assume success until proven otherwise
+
+        // Initialize breakdown
+        scoreBreakdown[numId] = {
+            previousScore: team.score,
+            tricksWon: 0,
+            bid: 0,
+            basePoints: 0,
+            bags: 0,
+            bagPoints: 0,
+            bagPenalty: 0,
+            nilBonus: 0,
+            nilPenalty: 0,
+            roundScore: 0,
+            newScore: team.score,
+        };
     });
 
     // Count tricks won per team
@@ -48,22 +75,83 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
         }
     });
 
-    scoreNilBids(
-        bids,
-        completedTricks,
-        playerTeam,
-        teamScores,
-        nilSuccess,
-        teamBids
-    );
-    scoreRegularBids(
-        teams,
-        tricksWon,
-        teamBids,
-        teamScores,
-        teamBags,
-        settings
-    );
+    // Process nil bids first
+    Object.entries(bids).forEach(([playerId, bid]: [string, Bid]) => {
+        const teamId = playerTeam[playerId];
+        if (bid.type === "nil") {
+            const playerTricks = completedTricks.filter(
+                (trick) => trick.winnerId === playerId
+            ).length;
+
+            if (playerTricks === 0) {
+                // Successful nil: +100 points
+                scoreBreakdown[teamId].nilBonus += 100;
+            } else {
+                // Failed nil: -100 points
+                scoreBreakdown[teamId].nilPenalty += 100;
+                nilSuccess[teamId] = false;
+            }
+        } else {
+            // Regular bid - add to team total
+            teamBids[teamId] += bid.amount;
+        }
+    });
+
+    // Update breakdown with bid totals and tricks
+    Object.keys(teams).forEach((teamIdStr) => {
+        const teamId = Number(teamIdStr);
+        scoreBreakdown[teamId].bid = teamBids[teamId];
+        scoreBreakdown[teamId].tricksWon = tricksWon[teamId];
+    });
+
+    // Score regular bids
+    const teamBags: Record<number, number> = {};
+    Object.keys(teams).forEach((teamIdStr) => {
+        const teamId = Number(teamIdStr);
+        const bid = teamBids[teamId];
+        const tricks = tricksWon[teamId];
+        teamBags[teamId] = 0;
+
+        if (bid > 0) {
+            if (tricks >= bid) {
+                // Made bid
+                scoreBreakdown[teamId].basePoints = bid * 10;
+                const bags = tricks - bid;
+                scoreBreakdown[teamId].bags = bags;
+                scoreBreakdown[teamId].bagPoints = bags; // +1 per bag
+                teamBags[teamId] = bags;
+            } else {
+                // Failed bid
+                scoreBreakdown[teamId].basePoints = -(bid * 10);
+            }
+        }
+
+        // Check for bag penalty (10+ accumulated bags)
+        // Note: We need to track accumulated bags across rounds
+        // For now, we apply penalty if this round's bags push us over 10
+        // This is simplified - ideally we'd track cumulative bags in game state
+        if (teamBags[teamId] >= 10) {
+            scoreBreakdown[teamId].bagPenalty = Math.abs(settings.bagsPenalty);
+            teamBags[teamId] -= 10;
+        }
+    });
+
+    // Calculate final scores
+    const teamScores: Record<number, number> = {};
+    Object.keys(teams).forEach((teamIdStr) => {
+        const teamId = Number(teamIdStr);
+        const breakdown = scoreBreakdown[teamId];
+
+        breakdown.roundScore =
+            breakdown.basePoints +
+            breakdown.bagPoints +
+            breakdown.nilBonus -
+            breakdown.nilPenalty -
+            breakdown.bagPenalty;
+
+        breakdown.newScore = breakdown.previousScore + breakdown.roundScore;
+        teamScores[teamId] = breakdown.newScore;
+    });
 
     return {
         teamScores,
@@ -73,79 +161,6 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
             bids: teamBids,
             nilSuccess,
         },
-        scoreBreakdown: {},
+        scoreBreakdown,
     };
-}
-
-function scoreNilBids(
-    bids: Record<string, any>, // TODO: Define proper type for bids
-    completedTricks: Trick[],
-    playerTeam: Record<string, number>,
-    teamScores: Record<number, number>,
-    nilSuccess: Record<number, boolean>,
-    teamBids: Record<number, number>
-) {
-    Object.entries(bids).forEach(([pid, bid]) => {
-        const teamId = playerTeam[pid];
-        if (bid.type === "nil") {
-            // Nil bid: must win 0 tricks
-            const playerTricks = completedTricks.filter(
-                (trick) => trick.winnerId === pid
-            ).length;
-            nilSuccess[teamId] = nilSuccess[teamId] ?? true;
-            if (playerTricks === 0) {
-                // Successful nil
-                teamScores[teamId] += 100;
-            } else {
-                // Failed nil
-                teamScores[teamId] -= 100;
-                nilSuccess[teamId] = false;
-            }
-        } else {
-            teamBids[teamId] += bid.amount;
-        }
-    });
-}
-
-function scoreRegularBids(
-    teams: Record<number, any>, // TODO: Define proper type for teams
-    tricksWon: Record<number, number>,
-    teamBids: Record<number, number>,
-    teamScores: Record<number, number>,
-    teamBags: Record<number, number>,
-    settings: any // TODO: Define proper type for settings
-) {
-    Object.keys(teams).forEach((teamId) => {
-        const numId = Number(teamId);
-        const bid = teamBids[numId];
-        const tricks = tricksWon[numId];
-        if (bid > 0) {
-            if (tricks >= bid) {
-                // Made bid
-                teamScores[numId] += bid * 10;
-                const bags = tricks - bid;
-                teamBags[numId] += bags;
-                // Overbid: each extra trick over bid is +1 point
-                if (bags > 0) {
-                    teamScores[numId] += bags;
-                }
-                applyBagsPenalty(numId, teamScores, teamBags, settings);
-            } else {
-                // Failed bid
-                teamScores[numId] -= bid * 10;
-            }
-        }
-    });
-}
-
-function applyBagsPenalty(
-    teamId: number,
-    teamScores: Record<number, number>,
-    teamBags: Record<number, number>,
-    settings: any
-) {
-    if (teamBags[teamId] >= 10) {
-        teamScores[teamId] += settings.bagsPenalty;
-        teamBags[teamId] -= 10;
-    }
 }
