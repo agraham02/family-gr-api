@@ -19,6 +19,7 @@ import {
 } from "./services/RoomService";
 import { GameAction, gameManager } from "./services/GameManager";
 import { spadesModule } from "./games/spades";
+import { dominoesModule } from "./games/dominoes";
 import {
     emitGameEvent,
     emitPlayerGameEvent,
@@ -31,6 +32,7 @@ const DEFAULT_PORT = 3000;
 const PORT = process.env.PORT || DEFAULT_PORT;
 
 gameManager.registerGameModule("spades", spadesModule);
+gameManager.registerGameModule("dominoes", dominoesModule);
 
 function handleSocketError(socket: Socket, err: any) {
     console.error(err);
@@ -153,13 +155,16 @@ function startServer() {
             }
         });
 
-        socket.on("start_game", ({ roomId, userId, gameType }) => {
-            try {
-                startGame(roomId, userId, gameType);
-            } catch (err) {
-                handleSocketError(socket, err);
+        socket.on(
+            "start_game",
+            ({ roomId, userId, gameType, gameSettings }) => {
+                try {
+                    startGame(roomId, userId, gameType, gameSettings);
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
             }
-        });
+        );
 
         socket.on(
             "game_action",
