@@ -163,9 +163,17 @@ function getState(state: DominoesState): Partial<DominoesState> {
 function getPlayerState(
     state: DominoesState,
     playerId: string
-): Partial<DominoesState> & { hand?: Tile[] } {
+): Partial<DominoesState> & { hand?: Tile[]; localOrdering?: string[] } {
+    // Create a local ordering array starting from the current player's perspective
+    const idx = state.playOrder.indexOf(playerId);
+    const localOrdering = [
+        ...state.playOrder.slice(idx),
+        ...state.playOrder.slice(0, idx),
+    ];
+
     return {
         hand: state.hands[playerId] || [],
+        localOrdering,
     };
 }
 
@@ -304,7 +312,10 @@ function handlePass(state: DominoesState, playerId: string): DominoesState {
 /**
  * End the current round and calculate scores
  */
-function endRound(state: DominoesState, winnerId: string | null): DominoesState {
+function endRound(
+    state: DominoesState,
+    winnerId: string | null
+): DominoesState {
     const { scores, pipCounts, roundWinner } = calculateRoundScores(
         state.hands,
         state.playerScores,

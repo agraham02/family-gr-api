@@ -155,13 +155,16 @@ function startServer() {
             }
         });
 
-        socket.on("start_game", ({ roomId, userId, gameType }) => {
-            try {
-                startGame(roomId, userId, gameType);
-            } catch (err) {
-                handleSocketError(socket, err);
+        socket.on(
+            "start_game",
+            ({ roomId, userId, gameType, gameSettings }) => {
+                try {
+                    startGame(roomId, userId, gameType, gameSettings);
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
             }
-        });
+        );
 
         socket.on(
             "game_action",
