@@ -3,6 +3,7 @@ import { validateTeamsForGame } from "../utils/validateTeamsForGame";
 import { User } from "../models/User";
 import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
+import { emitGameEvent } from "../webhooks/gameWebhooks";
 import { gameManager } from "./GameManager";
 
 const rooms: Map<string, Room> = new Map();
@@ -14,6 +15,12 @@ const roomDeletionTimers: Map<string, NodeJS.Timeout> = new Map();
 // Configurable TTL in minutes before deleting an empty room
 const ROOM_EMPTY_TTL_MINUTES: number = Number(
     process.env.ROOM_EMPTY_TTL_MINUTES ?? 10
+);
+// Track reconnection timeout timers for paused games
+const reconnectTimeoutTimers: Map<string, NodeJS.Timeout> = new Map();
+// Configurable timeout in minutes before aborting a paused game
+const RECONNECT_TIMEOUT_MINUTES: number = Number(
+    process.env.RECONNECT_TIMEOUT_MINUTES ?? 5
 );
 
 /**
@@ -51,6 +58,69 @@ function cancelScheduledRoomDeletion(roomId: string): void {
         roomDeletionTimers.delete(roomId);
         console.log("Timeout canceled");
     }
+}
+
+/**
+ * Start a reconnection timeout timer for a paused game.
+ * If no players reconnect within the timeout, the game is aborted.
+ */
+function scheduleReconnectTimeout(roomId: string): void {
+    // Avoid double-scheduling
+    if (reconnectTimeoutTimers.has(roomId)) return;
+    const ms = RECONNECT_TIMEOUT_MINUTES * 60 * 1000;
+    const timeout = setTimeout(() => {
+        abortGameDueToTimeout(roomId);
+    }, ms);
+    reconnectTimeoutTimers.set(roomId, timeout);
+    console.log(
+        `Reconnect timeout started for room ${roomId} (${RECONNECT_TIMEOUT_MINUTES} minutes)`
+    );
+}
+
+/**
+ * Cancel a pending reconnection timeout timer.
+ */
+function cancelReconnectTimeout(roomId: string): void {
+    const timeout = reconnectTimeoutTimers.get(roomId);
+    if (timeout) {
+        clearTimeout(timeout);
+        reconnectTimeoutTimers.delete(roomId);
+        console.log(`Reconnect timeout canceled for room ${roomId}`);
+    }
+}
+
+/**
+ * Abort a game due to reconnection timeout expiry.
+ * Sets room state to ended and notifies all clients.
+ */
+function abortGameDueToTimeout(roomId: string): void {
+    const room = rooms.get(roomId);
+    if (!room) {
+        reconnectTimeoutTimers.delete(roomId);
+        return;
+    }
+
+    // Clean up game state
+    if (room.gameId) {
+        gameManager.removeGame(room.gameId);
+    }
+
+    room.state = "ended";
+    room.gameId = null;
+    room.isPaused = false;
+    room.pausedAt = undefined;
+
+    // Reset ready states for all users
+    room.users.forEach((user) => {
+        room.readyStates[user.id] = false;
+    });
+
+    emitRoomEvent<{ reason: string }>(room, "game_aborted", {
+        reason: "reconnect_timeout",
+    });
+
+    reconnectTimeoutTimers.delete(roomId);
+    console.log(`Game aborted due to reconnect timeout for room ${roomId}`);
 }
 
 /**
@@ -96,6 +166,8 @@ export function registerSocketUser(
             const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
             if (hasMinPlayers && room.isPaused) {
                 room.isPaused = false;
+                room.pausedAt = undefined;
+                cancelReconnectTimeout(room.id);
                 emitRoomEvent<{ userName?: string }>(room, "game_resumed", {
                     userName: user.name,
                 });
@@ -160,7 +232,9 @@ export function joinRoom(
 
         // If game is active and user was disconnected, allow rejoin
         if (isActiveGame(room) && existingUser.isConnected === false) {
-            console.log(`User ${userName} rejoining active game in room ${room.id}`);
+            console.log(
+                `User ${userName} rejoining active game in room ${room.id}`
+            );
             // Connection will be handled in registerSocketUser
             return { room, user: existingUser };
         }
@@ -227,16 +301,41 @@ export function handleUserDisconnect(socketId: string): void {
 
         // Check if game should be paused
         const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
-        if (!hasMinPlayers) {
+        if (!hasMinPlayers && !room.isPaused) {
             room.isPaused = true;
-            emitRoomEvent<{ userName?: string; reason: string }>(
-                room,
-                "game_paused",
-                {
-                    userName,
-                    reason: "waiting_for_players",
-                }
+            room.pausedAt = new Date();
+            scheduleReconnectTimeout(room.id);
+            const timeoutAt = new Date(
+                room.pausedAt.getTime() + RECONNECT_TIMEOUT_MINUTES * 60 * 1000
             );
+            emitRoomEvent<{
+                userName?: string;
+                reason: string;
+                timeoutAt: string;
+            }>(room, "game_paused", {
+                userName,
+                reason: "waiting_for_players",
+                timeoutAt: timeoutAt.toISOString(),
+            });
+        }
+
+        // Auto-promote leader if the disconnected user was the leader
+        if (room.leaderId === userId) {
+            const connectedUsers = room.users.filter(
+                (u) => u.isConnected !== false
+            );
+            if (connectedUsers.length > 0) {
+                const newLeader = connectedUsers[0];
+                room.leaderId = newLeader.id;
+                emitRoomEvent<{ newLeaderId: string; newLeaderName: string }>(
+                    room,
+                    "leader_promoted",
+                    {
+                        newLeaderId: newLeader.id,
+                        newLeaderName: newLeader.name,
+                    }
+                );
+            }
         }
 
         // Emit event about user disconnection
@@ -355,11 +454,93 @@ export function kickUser(
     if (!room.users.find((u) => u.id === targetUserId))
         throw new Error("User not found in room");
 
-    room.users = room.users.filter((u) => u.id !== targetUserId);
-    delete room.readyStates[targetUserId];
-    emitRoomEvent<{ userId: string }>(room, "user_kicked", {
-        userId: targetUserId,
-    });
+    const kickedUser = room.users.find((u) => u.id === targetUserId);
+    const kickedUserName = kickedUser?.name;
+
+    // If game is active, we need to handle game state
+    if (isActiveGame(room)) {
+        // Remove player from game state
+        if (room.gameId) {
+            gameManager.handlePlayerDisconnect(room.gameId, targetUserId);
+        }
+
+        // Remove user from room
+        room.users = room.users.filter((u) => u.id !== targetUserId);
+        delete room.readyStates[targetUserId];
+
+        // Check if game can continue with remaining players
+        const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
+
+        if (!hasMinPlayers) {
+            // Not enough players to continue - abort the game
+            cancelReconnectTimeout(room.id);
+
+            if (room.gameId) {
+                gameManager.removeGame(room.gameId);
+            }
+
+            room.state = "ended";
+            room.gameId = null;
+            room.isPaused = false;
+            room.pausedAt = undefined;
+
+            // Reset ready states for remaining users
+            room.users.forEach((user) => {
+                room.readyStates[user.id] = false;
+            });
+
+            emitRoomEvent<{ userId: string; userName?: string }>(
+                room,
+                "user_kicked",
+                {
+                    userId: targetUserId,
+                    userName: kickedUserName,
+                }
+            );
+
+            emitRoomEvent<{ reason: string }>(room, "game_aborted", {
+                reason: "not_enough_players",
+            });
+        } else {
+            // Game can continue
+            emitRoomEvent<{ userId: string; userName?: string }>(
+                room,
+                "user_kicked",
+                {
+                    userId: targetUserId,
+                    userName: kickedUserName,
+                }
+            );
+
+            // If game was paused waiting for this player, it might be able to resume now
+            // (though in most cases kicking a disconnected player won't help reach minimum)
+            if (room.isPaused) {
+                const canResume = gameManager.checkMinimumPlayers(room.gameId);
+                if (canResume) {
+                    room.isPaused = false;
+                    room.pausedAt = undefined;
+                    cancelReconnectTimeout(room.id);
+                    emitRoomEvent(room, "game_resumed", {});
+                }
+            }
+
+            // Emit game state update
+            emitGameEvent(room, "sync");
+        }
+    } else {
+        // Not in active game - original behavior
+        room.users = room.users.filter((u) => u.id !== targetUserId);
+        delete room.readyStates[targetUserId];
+        emitRoomEvent<{ userId: string; userName?: string }>(
+            room,
+            "user_kicked",
+            {
+                userId: targetUserId,
+                userName: kickedUserName,
+            }
+        );
+    }
+
     // If kicking resulted in an empty room, schedule deletion
     if (room.users.length === 0) {
         scheduleRoomDeletionIfEmpty(roomId);
