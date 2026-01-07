@@ -27,7 +27,9 @@ import {
 } from "./webhooks/gameWebhooks";
 import { socketRateLimiter } from "./utils/rateLimiter";
 
-dotenv.config();
+const IS_DEBUG_LOGGING = process.env.NODE_ENV === "development";
+
+dotenv.config({ debug: IS_DEBUG_LOGGING });
 
 const DEFAULT_PORT = 3000;
 const PORT = process.env.PORT || DEFAULT_PORT;
