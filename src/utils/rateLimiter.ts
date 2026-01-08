@@ -116,8 +116,8 @@ export class RateLimiter {
 }
 
 // Default rate limiter instance for socket events
-// 20 events per second should be generous for normal gameplay
+// 50 events per second is generous for normal gameplay including initial load bursts
 export const socketRateLimiter = new RateLimiter({
     windowMs: 1000,
-    maxRequests: 20,
+    maxRequests: 50,
 });
