@@ -197,6 +197,7 @@ function startServer() {
         socket.on(
             "game_action",
             ({ roomId, action }: { roomId: string; action: GameAction }) => {
+                const actionId = (action as any).actionId;
                 try {
                     const room = getRoom(roomId);
                     if (!room) {
@@ -216,7 +217,26 @@ function startServer() {
                         "player_sync",
                         action.userId
                     );
+
+                    // Send acknowledgement back to the client
+                    if (actionId) {
+                        socket.emit("action_ack", {
+                            actionId,
+                            success: true,
+                        });
+                    }
                 } catch (err) {
+                    // Send error acknowledgement
+                    if (actionId) {
+                        socket.emit("action_ack", {
+                            actionId,
+                            success: false,
+                            error:
+                                err instanceof Error
+                                    ? err.message
+                                    : "Action failed",
+                        });
+                    }
                     handleSocketError(socket, err);
                 }
             }
