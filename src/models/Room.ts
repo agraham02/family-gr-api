@@ -31,6 +31,7 @@ export interface Room {
     gameSettings?: GameSettings; // Game-specific settings (persisted across games)
     isPaused?: boolean; // Track if game is paused due to disconnections
     pausedAt?: Date; // Timestamp when game was paused (for timeout countdown)
+    timeoutAt?: Date; // Timestamp when the pause timeout expires (for countdown on client)
     spectators?: string[]; // Array of user IDs who are spectating
     kickedUserIds?: string[]; // Array of user IDs who have been kicked (cannot rejoin)
 }

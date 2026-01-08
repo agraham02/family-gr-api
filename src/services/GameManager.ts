@@ -161,6 +161,32 @@ class GameManager {
         }
     }
 
+    /**
+     * Remove a player from the game entirely (used when player voluntarily leaves).
+     * This prevents them from auto-reconnecting when they return to the lobby.
+     */
+    removePlayerFromGame(gameId: string | null, userId: string): void {
+        if (!gameId) return;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return;
+
+        // Remove the player from the game state
+        if (gameState.players[userId]) {
+            delete gameState.players[userId];
+            console.log(`🗑️ Removed player ${userId} from game ${gameId}`);
+        }
+    }
+
+    /**
+     * Check if a user is a player in the game (not removed).
+     */
+    isPlayerInGame(gameId: string | null, userId: string): boolean {
+        if (!gameId) return false;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return false;
+        return !!gameState.players[userId];
+    }
+
     checkMinimumPlayers(gameId: string | null): boolean {
         if (!gameId) return false;
         const gameState = this.games.get(gameId);

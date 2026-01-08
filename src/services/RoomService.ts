@@ -22,7 +22,7 @@ const ROOM_EMPTY_TTL_SECONDS: number = Number(
 const reconnectTimeoutTimers: Map<string, NodeJS.Timeout> = new Map();
 // Configurable timeout in minutes before aborting a paused game
 const RECONNECT_TIMEOUT_MINUTES: number = Number(
-    process.env.RECONNECT_TIMEOUT_MINUTES ?? 5
+    process.env.RECONNECT_TIMEOUT_MINUTES ?? 2
 );
 
 /**
@@ -122,6 +122,9 @@ function cancelReconnectTimeout(roomId: string): void {
  * Sets room state to ended and notifies all clients.
  */
 function abortGameDueToTimeout(roomId: string): void {
+    console.log(
+        `⏰ Reconnect timeout expired for room ${roomId} - aborting game`
+    );
     const room = rooms.get(roomId);
     if (!room) {
         reconnectTimeoutTimers.delete(roomId);
@@ -133,7 +136,7 @@ function abortGameDueToTimeout(roomId: string): void {
         gameManager.removeGame(room.gameId);
     }
 
-    room.state = "ended";
+    room.state = "lobby";
     room.gameId = null;
     room.isPaused = false;
     room.pausedAt = undefined;
@@ -233,25 +236,24 @@ export function registerSocketUser(
         );
     }
 
+    console.log(
+        `📡 registerSocketUser: user ${user.name} (${userId}), isConnected: ${user.isConnected}, room state: ${room.state}, isPaused: ${room.isPaused}`
+    );
+
     // Handle rejoin for both lobby and in-game states
     if (user.isConnected === false) {
         // User is rejoining
+        console.log(
+            `🔄 User ${user.name} (${userId}) is rejoining - was disconnected, now marking connected`
+        );
         user.isConnected = true;
 
         if (isActiveGame(room)) {
             // In-game rejoin
+            console.log(
+                `🎮 User ${user.name} rejoining active game. Room paused: ${room.isPaused}`
+            );
             gameManager.handlePlayerReconnect(room.gameId, userId);
-
-            // Check if game can be resumed
-            const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
-            if (hasMinPlayers && room.isPaused) {
-                room.isPaused = false;
-                room.pausedAt = undefined;
-                cancelReconnectTimeout(room.id);
-                emitRoomEvent<{ userName?: string }>(room, "game_resumed", {
-                    userName: user.name,
-                });
-            }
 
             // Emit event about user reconnection
             emitRoomEvent<{ userName?: string; userId: string }>(
@@ -261,7 +263,6 @@ export function registerSocketUser(
             );
         } else {
             // Lobby rejoin - user must have refreshed the page and is joining again
-            // (With immediate removal on disconnect, this happens when they rejoin)
 
             // Emit reconnection event
             emitRoomEvent<{ userName?: string; userId: string }>(
@@ -271,6 +272,38 @@ export function registerSocketUser(
             );
 
             console.log(`User ${user.name} reconnected to lobby`);
+        }
+    }
+
+    // ALWAYS check if game can be resumed when user registers socket during active game
+    // This handles the case where user was marked connected by lobby's join_room before game page loaded
+    if (isActiveGame(room) && room.isPaused) {
+        // Only reconnect if user is actually a player in the game (not a new/replacement user)
+        const isGamePlayer = gameManager.isPlayerInGame(room.gameId, userId);
+        const isSpectator = room.spectators?.includes(userId) ?? false;
+
+        if (isGamePlayer && !isSpectator) {
+            // Ensure the game state's player is marked as connected
+            gameManager.handlePlayerReconnect(room.gameId, userId);
+
+            const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
+            console.log(
+                `🎮 Checking resume: hasMinPlayers=${hasMinPlayers}, isPaused=${room.isPaused}`
+            );
+            if (hasMinPlayers) {
+                console.log(`✅ Resuming game - all players connected`);
+                room.isPaused = false;
+                room.pausedAt = undefined;
+                room.timeoutAt = undefined;
+                cancelReconnectTimeout(room.id);
+                emitRoomEvent<{ userName?: string }>(room, "game_resumed", {
+                    userName: user.name,
+                });
+            }
+        } else {
+            console.log(
+                `📡 User ${user.name} is not a game player (isGamePlayer=${isGamePlayer}, isSpectator=${isSpectator}) - skipping reconnect`
+            );
         }
     }
 
@@ -331,16 +364,18 @@ export function joinRoom(
     if (existingUser) {
         console.log(`User ${userName} already in room ${room.id}`);
 
-        // If user was marked as disconnected, mark them as connected
+        // DON'T mark as connected here - let registerSocketUser handle it
+        // This ensures the resume logic triggers properly when socket connects
         if (existingUser.isConnected === false) {
-            existingUser.isConnected = true;
-            console.log(`User ${userName} rejoining room ${room.id}`);
+            console.log(
+                `User ${userName} will rejoin room ${room.id} on socket connection`
+            );
         }
 
         // If game is active, log it (connection will be handled in registerSocketUser)
         if (isActiveGame(room)) {
             console.log(
-                `User ${userName} rejoining active game in room ${room.id}`
+                `User ${userName} rejoining active game in room ${room.id} (will reconnect on socket)`
             );
         }
 
@@ -437,10 +472,11 @@ export function handleUserDisconnect(socketId: string): void {
         if (!hasMinPlayers && !room.isPaused) {
             room.isPaused = true;
             room.pausedAt = new Date();
-            scheduleReconnectTimeout(room.id);
             const timeoutAt = new Date(
                 room.pausedAt.getTime() + RECONNECT_TIMEOUT_MINUTES * 60 * 1000
             );
+            room.timeoutAt = timeoutAt;
+            scheduleReconnectTimeout(room.id);
             emitRoomEvent<{
                 userName?: string;
                 reason: string;
@@ -702,6 +738,7 @@ export function kickUser(
             room.gameId = null;
             room.isPaused = false;
             room.pausedAt = undefined;
+            room.timeoutAt = undefined;
 
             // Reset ready states for remaining users
             room.users.forEach((user) => {
@@ -738,6 +775,7 @@ export function kickUser(
                 if (canResume) {
                     room.isPaused = false;
                     room.pausedAt = undefined;
+                    room.timeoutAt = undefined;
                     cancelReconnectTimeout(room.id);
                     emitRoomEvent(room, "game_resumed", {});
                 }
@@ -858,6 +896,8 @@ export function startGame(
     room.state = "in-game";
     room.gameId = gameId;
     room.isPaused = false;
+    room.pausedAt = undefined;
+    room.timeoutAt = undefined;
 
     // Optionally, emit initial game state
     const gameState = gameManager.getGame(gameId);
@@ -891,9 +931,10 @@ export function leaveGame(roomId: string, userId: string): void {
     const userName = user.name;
 
     if (isActiveGame(room)) {
-        // Notify GameManager about player leaving
+        // Remove player from game entirely (not just disconnect)
+        // This prevents auto-reconnection when they return to the lobby
         if (room.gameId) {
-            gameManager.handlePlayerDisconnect(room.gameId, userId);
+            gameManager.removePlayerFromGame(room.gameId, userId);
         }
 
         // Remove user from room completely (they're going back to lobby page,
@@ -929,15 +970,19 @@ export function leaveGame(roomId: string, userId: string): void {
             { userName, voluntary: true }
         );
 
+        // Emit game sync so remaining players see updated player states
+        emitGameEvent(room, "sync");
+
         // Check if game should be paused (waiting for replacement player)
         const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
         if (!hasMinPlayers && !room.isPaused) {
             room.isPaused = true;
             room.pausedAt = new Date();
-            scheduleReconnectTimeout(room.id);
             const timeoutAt = new Date(
                 room.pausedAt.getTime() + RECONNECT_TIMEOUT_MINUTES * 60 * 1000
             );
+            room.timeoutAt = timeoutAt;
+            scheduleReconnectTimeout(room.id);
             emitRoomEvent<{
                 reason: string;
                 timeoutAt: string;
@@ -1010,6 +1055,7 @@ export function abortGame(roomId: string, userId: string): void {
     room.gameId = null;
     room.isPaused = false;
     room.pausedAt = undefined;
+    room.timeoutAt = undefined;
 
     // Reset ready states for all users
     room.users.forEach((user) => {
@@ -1193,6 +1239,7 @@ export function claimPlayerSlot(
     if (allPlayersConnected && room.isPaused) {
         room.isPaused = false;
         room.pausedAt = undefined;
+        room.timeoutAt = undefined;
         cancelReconnectTimeout(room.id);
         emitRoomEvent(room, "game_resumed");
     }
