@@ -10,6 +10,8 @@ const rooms: Map<string, Room> = new Map();
 const roomCodeToId: Map<string, string> = new Map();
 // Track socketId -> { roomId, userId }
 const socketToUser: Map<string, { roomId: string; userId: string }> = new Map();
+// Track userId -> socketId for deduplication (prevents duplicate joins from React Strict Mode/reconnects)
+const userToSocket: Map<string, string> = new Map();
 // Track scheduled deletions for empty rooms
 const roomDeletionTimers: Map<string, NodeJS.Timeout> = new Map();
 // Configurable TTL in minutes before deleting an empty room
@@ -34,6 +36,32 @@ const LOBBY_DISCONNECT_GRACE_SECONDS: number = Number(
  */
 function isActiveGame(room: Room): boolean {
     return room.state === "in-game" && room.gameId !== null;
+}
+
+/**
+ * Remove a user from team assignments when they leave the room.
+ * Returns true if teams were modified.
+ */
+function removeUserFromTeams(room: Room, userId: string): boolean {
+    if (!room.teams || room.teams.length === 0) return false;
+
+    let modified = false;
+    for (let t = 0; t < room.teams.length; t++) {
+        const idx = room.teams[t].indexOf(userId);
+        if (idx !== -1) {
+            // Replace with empty string to preserve slot structure
+            room.teams[t][idx] = "";
+            modified = true;
+        }
+    }
+
+    if (modified) {
+        emitRoomEvent<{ teams: string[][] }>(room, "teams_set", {
+            teams: room.teams,
+        });
+    }
+
+    return modified;
 }
 
 function scheduleRoomDeletionIfEmpty(roomId: string): void {
@@ -121,6 +149,9 @@ function scheduleLobbyDisconnectRemoval(
         if (user && user.isConnected === false) {
             room.users = room.users.filter((u) => u.id !== userId);
             delete room.readyStates[userId];
+
+            // Remove from team assignments
+            removeUserFromTeams(room, userId);
 
             // If user was leader, assign new leader if possible
             if (room.leaderId === userId && room.users.length > 0) {
@@ -225,20 +256,47 @@ async function generateUniqueRoomCode(): Promise<string> {
 /**
  * Register a socket connection to a user and room after REST join.
  * Handles rejoin logic if user is already in the room (both lobby and in-game).
+ * Returns { alreadyConnected: true } if user already has an active socket connection.
+ * Throws an error if user has been kicked from the room.
  */
 export function registerSocketUser(
     socketId: string,
     roomId: string,
     userId: string
-): void {
-    socketToUser.set(socketId, { roomId, userId });
-
-    // Check if this is a rejoin scenario (user exists but disconnected)
+): { alreadyConnected: boolean } {
+    // Check if the room exists first
     const room = rooms.get(roomId);
-    if (!room) return;
+    if (!room) {
+        throw new Error("Room not found");
+    }
+
+    // Check if user has been kicked from this room
+    if (room.kickedUserIds?.includes(userId)) {
+        throw new Error(
+            "You have been kicked from this room and cannot rejoin"
+        );
+    }
+
+    // Check for duplicate connection (same user already connected with different socket)
+    const existingSocketId = userToSocket.get(userId);
+    if (existingSocketId && existingSocketId !== socketId) {
+        const existingMapping = socketToUser.get(existingSocketId);
+        if (existingMapping && existingMapping.roomId === roomId) {
+            // User already has an active socket in this room - this is a duplicate
+            console.log(
+                `Duplicate join detected for user ${userId} in room ${roomId}. ` +
+                    `Existing socket: ${existingSocketId}, New socket: ${socketId}`
+            );
+            return { alreadyConnected: true };
+        }
+    }
+
+    // Register the new socket connection
+    socketToUser.set(socketId, { roomId, userId });
+    userToSocket.set(userId, socketId);
 
     const user = room.users.find((u) => u.id === userId);
-    if (!user) return;
+    if (!user) return { alreadyConnected: false };
 
     // Handle rejoin for both lobby and in-game states
     if (user.isConnected === false) {
@@ -280,6 +338,8 @@ export function registerSocketUser(
             console.log(`User ${user.name} reconnected to lobby`);
         }
     }
+
+    return { alreadyConnected: false };
 }
 
 export async function createRoom(
@@ -322,6 +382,13 @@ export function joinRoom(
     const room = roomId ? rooms.get(roomId) : undefined;
     if (!room) throw new Error("Room not found");
 
+    // Check if user has been kicked from this room
+    if (userId && room.kickedUserIds?.includes(userId)) {
+        throw new Error(
+            "You have been kicked from this room and cannot rejoin"
+        );
+    }
+
     // If a deletion was scheduled (room had been empty), cancel it now
     cancelScheduledRoomDeletion(room.id);
 
@@ -354,6 +421,12 @@ export function joinRoom(
         throw new Error("Cannot join: game is already in progress");
     }
 
+    // Check max players limit
+    const maxPlayers = room.settings?.maxPlayers;
+    if (maxPlayers && room.users.length >= maxPlayers) {
+        throw new Error(`Room is full (max ${maxPlayers} players)`);
+    }
+
     const user: User = {
         id: userId || uuidv4(),
         name: userName,
@@ -370,6 +443,25 @@ export function joinRoom(
 
 export function getRoom(roomId: string): Room | undefined {
     return rooms.get(roomId);
+}
+
+/**
+ * Get the socket ID for a user.
+ * Returns undefined if user doesn't have an active socket.
+ */
+export function getSocketIdForUser(userId: string): string | undefined {
+    return userToSocket.get(userId);
+}
+
+/**
+ * Clean up socket mappings for a user (used when kicking).
+ */
+export function cleanupUserSocket(userId: string): void {
+    const socketId = userToSocket.get(userId);
+    if (socketId) {
+        socketToUser.delete(socketId);
+        userToSocket.delete(userId);
+    }
 }
 
 /**
@@ -470,6 +562,10 @@ export function handleUserDisconnect(socketId: string): void {
     }
 
     socketToUser.delete(socketId);
+    // Only remove userToSocket mapping if this was the active socket for this user
+    if (userToSocket.get(userId) === socketId) {
+        userToSocket.delete(userId);
+    }
 }
 
 export function setReadyState(
@@ -548,11 +644,62 @@ export function selectGame(
     emitRoomEvent(room, "game_selected", { gameType });
 }
 
+/**
+ * Update room settings (maxPlayers, pauseTimeoutSeconds).
+ * Only the room leader can update settings.
+ */
+export function updateRoomSettings(
+    roomId: string,
+    userId: string,
+    settings: { maxPlayers?: number; pauseTimeoutSeconds?: number }
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can update room settings");
+
+    room.settings = {
+        ...room.settings,
+        ...settings,
+    };
+
+    emitRoomEvent(room, "room_settings_updated", { settings: room.settings });
+}
+
+/**
+ * Update game settings (winTarget, allowNil, etc.).
+ * Only the room leader can update settings.
+ * Settings are persisted to the room and used when starting games.
+ */
+export function updateGameSettings(
+    roomId: string,
+    userId: string,
+    gameSettings: Record<string, unknown>
+): void {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the current leader can update game settings");
+
+    room.gameSettings = {
+        ...room.gameSettings,
+        ...gameSettings,
+    };
+
+    emitRoomEvent(room, "game_settings_updated", {
+        gameSettings: room.gameSettings,
+    });
+}
+
+/**
+ * Kick a user from the room.
+ * Returns the kicked user's socket ID so it can be forcefully disconnected.
+ */
 export function kickUser(
     roomId: string,
     userId: string,
     targetUserId: string
-): void {
+): { kickedSocketId: string | undefined } {
     const room = getRoom(roomId);
     if (!room) throw new Error("Room not found");
     if (room.leaderId !== userId)
@@ -562,6 +709,18 @@ export function kickUser(
 
     const kickedUser = room.users.find((u) => u.id === targetUserId);
     const kickedUserName = kickedUser?.name;
+
+    // Get the kicked user's socket ID before cleaning up
+    const kickedSocketId = getSocketIdForUser(targetUserId);
+
+    // Add to kicked users list to prevent rejoining
+    if (!room.kickedUserIds) {
+        room.kickedUserIds = [];
+    }
+    room.kickedUserIds.push(targetUserId);
+
+    // Clean up socket mappings for the kicked user
+    cleanupUserSocket(targetUserId);
 
     // If game is active, we need to handle game state
     if (isActiveGame(room)) {
@@ -637,6 +796,10 @@ export function kickUser(
         // Not in active game - original behavior
         room.users = room.users.filter((u) => u.id !== targetUserId);
         delete room.readyStates[targetUserId];
+
+        // Remove from team assignments
+        removeUserFromTeams(room, targetUserId);
+
         emitRoomEvent<{ userId: string; userName?: string }>(
             room,
             "user_kicked",
@@ -651,6 +814,8 @@ export function kickUser(
     if (room.users.length === 0) {
         scheduleRoomDeletionIfEmpty(roomId);
     }
+
+    return { kickedSocketId };
 }
 
 export function setTeams(
@@ -663,9 +828,9 @@ export function setTeams(
     if (room.leaderId !== userId)
         throw new Error("Only the current leader can set teams");
 
-    // Validate teams using per-game logic
+    // Validate teams using per-game logic (partial assignments allowed)
     const allUserIds = room.users.map((u) => u.id);
-    validateTeamsForGame(room.selectedGameType, teams, allUserIds);
+    validateTeamsForGame(room.selectedGameType, teams, allUserIds, false);
 
     room.teams = teams;
     emitRoomEvent<{ teams: string[][] }>(room, "teams_set", { teams });
@@ -718,6 +883,16 @@ export function startGame(
         throw new Error("Only the current leader can start the game");
     if (Object.values(room.readyStates).some((ready) => !ready))
         throw new Error("Not all players are ready");
+
+    // Validate teams are complete for team-based games
+    const module = gameManager.getGameModule(gameType);
+    if (module && module.metadata.numTeams && module.metadata.numTeams > 0) {
+        if (!room.teams || room.teams.length === 0) {
+            throw new Error("Teams must be assigned before starting the game");
+        }
+        const allUserIds = room.users.map((u) => u.id);
+        validateTeamsForGame(gameType, room.teams, allUserIds, true);
+    }
 
     // Mark all users as connected when starting the game
     room.users.forEach((user) => {
@@ -829,6 +1004,9 @@ export function leaveGame(roomId: string, userId: string): void {
         room.users = room.users.filter((u) => u.id !== userId);
         delete room.readyStates[userId];
 
+        // Remove from team assignments
+        removeUserFromTeams(room, userId);
+
         // Handle leader promotion
         if (room.leaderId === userId && room.users.length > 0) {
             room.leaderId = room.users[0].id;
@@ -890,4 +1068,217 @@ export function abortGame(roomId: string, userId: string): void {
     });
 
     console.log(`Game aborted by leader in room ${roomId}`);
+}
+
+/**
+ * Add a user as a spectator to a room with an active game.
+ * Spectators can watch the game but cannot participate.
+ */
+export function addSpectator(
+    roomCode: string,
+    userName: string,
+    userId?: string
+): { room: Room; user: User; isSpectator: true } {
+    const roomId = roomCodeToId.get(roomCode);
+    const room = roomId ? rooms.get(roomId) : undefined;
+    if (!room) throw new Error("Room not found");
+
+    // Can only spectate if game is in progress
+    if (!isActiveGame(room)) {
+        throw new Error("No active game to spectate");
+    }
+
+    // Check if already a spectator
+    const existingSpectatorId = room.spectators?.find((id) => id === userId);
+    if (existingSpectatorId) {
+        const existingUser = room.users.find((u) => u.id === userId);
+        if (existingUser) {
+            return { room, user: existingUser, isSpectator: true };
+        }
+    }
+
+    // Check if already a player in the game
+    const existingPlayer = room.users.find((u) => u.id === userId);
+    if (existingPlayer) {
+        throw new Error("You are already a player in this game");
+    }
+
+    const user: User = {
+        id: userId || uuidv4(),
+        name: userName,
+        isConnected: true,
+    };
+
+    // Initialize spectators array if not exists
+    if (!room.spectators) {
+        room.spectators = [];
+    }
+
+    // Add to users list (for tracking) but mark as spectator
+    room.users.push(user);
+    room.spectators.push(user.id);
+
+    emitRoomEvent<{ userName: string; isSpectator: boolean }>(
+        room,
+        "user_joined",
+        { userName: user.name, isSpectator: true }
+    );
+
+    console.log(`User ${userName} joined as spectator in room ${roomId}`);
+    return { room, user, isSpectator: true };
+}
+
+/**
+ * Move a player from the game to spectator mode.
+ * The game continues with their slot open for replacement.
+ */
+export function moveToSpectators(roomId: string, userId: string): void {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+    if (!isActiveGame(room)) throw new Error("No active game");
+
+    const user = room.users.find((u) => u.id === userId);
+    if (!user) throw new Error("User not found in room");
+
+    // Check if already a spectator
+    if (room.spectators?.includes(userId)) {
+        throw new Error("User is already a spectator");
+    }
+
+    // Initialize spectators array if not exists
+    if (!room.spectators) {
+        room.spectators = [];
+    }
+
+    // Add to spectators
+    room.spectators.push(userId);
+
+    // Mark their game slot as disconnected (available for replacement)
+    if (room.gameId) {
+        gameManager.handlePlayerDisconnect(room.gameId, userId);
+    }
+
+    // Check if we need to pause the game (handled by handlePlayerDisconnect)
+    // Just emit the event here
+    emitRoomEvent<{ userId: string; userName: string }>(
+        room,
+        "player_moved_to_spectators",
+        { userId, userName: user.name }
+    );
+
+    console.log(`User ${user.name} moved to spectators in room ${roomId}`);
+}
+
+/**
+ * Allow a spectator (or new player) to claim an open player slot in an active game.
+ * The new player inherits the disconnected player's state.
+ */
+export function claimPlayerSlot(
+    roomId: string,
+    claimingUserId: string,
+    targetSlotUserId: string
+): { success: boolean; error?: string } {
+    const room = rooms.get(roomId);
+    if (!room) return { success: false, error: "Room not found" };
+    if (!isActiveGame(room)) return { success: false, error: "No active game" };
+
+    const claimingUser = room.users.find((u) => u.id === claimingUserId);
+    if (!claimingUser)
+        return { success: false, error: "Claiming user not found" };
+
+    // The claiming user must be a spectator
+    if (!room.spectators?.includes(claimingUserId)) {
+        return {
+            success: false,
+            error: "Only spectators can claim player slots",
+        };
+    }
+
+    // The target slot must be disconnected
+    const targetUser = room.users.find((u) => u.id === targetSlotUserId);
+    if (!targetUser) return { success: false, error: "Target slot not found" };
+    if (targetUser.isConnected) {
+        return { success: false, error: "Target slot is still connected" };
+    }
+
+    // Transfer the slot in the game engine
+    if (room.gameId) {
+        const transferred = gameManager.transferPlayerSlot(
+            room.gameId,
+            targetSlotUserId,
+            claimingUserId,
+            claimingUser.name
+        );
+        if (!transferred) {
+            return {
+                success: false,
+                error: "Failed to transfer slot in game engine",
+            };
+        }
+    }
+
+    // Remove claiming user from spectators
+    room.spectators = room.spectators.filter((id) => id !== claimingUserId);
+
+    // Remove old user and update their slot to the new user
+    room.users = room.users.filter((u) => u.id !== targetSlotUserId);
+    delete room.readyStates[targetSlotUserId];
+
+    // Update teams if applicable
+    if (room.teams) {
+        room.teams = room.teams.map((team) =>
+            team.map((id) => (id === targetSlotUserId ? claimingUserId : id))
+        );
+    }
+
+    // Check if game can resume (all slots filled)
+    const allPlayersConnected = room.users
+        .filter((u) => !room.spectators?.includes(u.id))
+        .every((u) => u.isConnected);
+
+    if (allPlayersConnected && room.isPaused) {
+        room.isPaused = false;
+        room.pausedAt = undefined;
+        cancelReconnectTimeout(room.id);
+        emitRoomEvent(room, "game_resumed");
+    }
+
+    emitRoomEvent<{
+        claimingUserId: string;
+        claimingUserName: string;
+        targetSlotUserId: string;
+    }>(room, "player_slot_claimed", {
+        claimingUserId,
+        claimingUserName: claimingUser.name,
+        targetSlotUserId,
+    });
+
+    console.log(
+        `User ${claimingUser.name} claimed slot of ${targetUser.name} in room ${roomId}`
+    );
+    return { success: true };
+}
+
+/**
+ * Get available (disconnected) player slots that spectators can claim.
+ */
+export function getAvailableSlots(
+    roomId: string
+): { userId: string; userName: string; teamIndex?: number }[] {
+    const room = rooms.get(roomId);
+    if (!room) return [];
+    if (!isActiveGame(room)) return [];
+
+    // Find disconnected players who are not spectators
+    const disconnectedPlayers = room.users.filter(
+        (u) => u.isConnected === false && !room.spectators?.includes(u.id)
+    );
+
+    return disconnectedPlayers.map((u) => {
+        let teamIndex: number | undefined;
+        if (room.teams) {
+            teamIndex = room.teams.findIndex((team) => team.includes(u.id));
+        }
+        return { userId: u.id, userName: u.name, teamIndex };
+    });
 }

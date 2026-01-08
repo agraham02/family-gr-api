@@ -181,6 +181,41 @@ class GameManager {
         );
         return connectedPlayers.length >= module.metadata.minPlayers;
     }
+
+    /**
+     * Transfer a player slot from a disconnected player to a new player.
+     * The new player inherits the old player's game state (hand, score, etc.).
+     */
+    transferPlayerSlot(
+        gameId: string | null,
+        oldUserId: string,
+        newUserId: string,
+        newUserName: string
+    ): boolean {
+        if (!gameId) return false;
+        const gameState = this.games.get(gameId);
+        if (!gameState) return false;
+
+        // Check if old user exists and is disconnected
+        const oldPlayer = gameState.players[oldUserId];
+        if (!oldPlayer) return false;
+        if (oldPlayer.isConnected !== false) return false;
+
+        // Create new player entry with old player's data but new identity
+        const newPlayer: User = {
+            id: newUserId,
+            name: newUserName,
+            isConnected: true,
+        };
+
+        // Remove old player and add new one
+        delete gameState.players[oldUserId];
+        gameState.players[newUserId] = newPlayer;
+
+        // Update the game in storage
+        this.games.set(gameId, gameState);
+        return true;
+    }
 }
 
 export const gameManager = new GameManager();

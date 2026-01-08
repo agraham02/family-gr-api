@@ -18,6 +18,12 @@ import {
     setTeams,
     startGame,
     toggleReadyState,
+    updateRoomSettings,
+    updateGameSettings,
+    addSpectator,
+    moveToSpectators,
+    claimPlayerSlot,
+    getAvailableSlots,
 } from "./services/RoomService";
 import { GameAction, gameManager } from "./services/GameManager";
 import { spadesModule } from "./games/spades";
@@ -94,7 +100,18 @@ function startServer() {
                         `join_room missing roomId or userId for socket ${socket.id}`
                     );
                 }
-                registerSocketUser(socket.id, roomId, userId);
+                const { alreadyConnected } = registerSocketUser(
+                    socket.id,
+                    roomId,
+                    userId
+                );
+
+                // If user already has an active connection, acknowledge but don't re-sync
+                if (alreadyConnected) {
+                    socket.emit("already_joined", { roomId, userId });
+                    return;
+                }
+
                 socket.join(roomId);
                 const room = getRoom(roomId);
                 if (!room) {
@@ -162,7 +179,22 @@ function startServer() {
 
         socket.on("kick_user", ({ roomId, userId, targetUserId }) => {
             try {
-                kickUser(roomId, userId, targetUserId);
+                const { kickedSocketId } = kickUser(
+                    roomId,
+                    userId,
+                    targetUserId
+                );
+
+                // Force disconnect the kicked user's socket
+                if (kickedSocketId) {
+                    const kickedSocket = io.sockets.sockets.get(kickedSocketId);
+                    if (kickedSocket) {
+                        console.log(
+                            `Force disconnecting kicked user socket: ${kickedSocketId}`
+                        );
+                        kickedSocket.disconnect(true);
+                    }
+                }
             } catch (err) {
                 handleSocketError(socket, err);
             }
@@ -184,6 +216,25 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
+
+        socket.on("update_room_settings", ({ roomId, userId, settings }) => {
+            try {
+                updateRoomSettings(roomId, userId, settings);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
+        socket.on(
+            "update_game_settings",
+            ({ roomId, userId, gameSettings }) => {
+                try {
+                    updateGameSettings(roomId, userId, gameSettings);
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
 
         socket.on(
             "start_game",
@@ -263,6 +314,94 @@ function startServer() {
         socket.on("abort_game", ({ roomId, userId }) => {
             try {
                 abortGame(roomId, userId);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
+        // Spectator system handlers
+        socket.on(
+            "spectate_game",
+            ({
+                roomCode,
+                userId,
+                userName,
+            }: {
+                roomCode: string;
+                userId: string;
+                userName: string;
+            }) => {
+                try {
+                    const result = addSpectator(roomCode, userName, userId);
+                    const { room, user } = result;
+
+                    // Register socket and join room
+                    const { alreadyConnected } = registerSocketUser(
+                        socket.id,
+                        room.id,
+                        user.id
+                    );
+
+                    if (!alreadyConnected) {
+                        socket.join(room.id);
+                    }
+
+                    // Send initial game state (neutral view for spectators)
+                    if (room.gameId) {
+                        const gameState = gameManager.getGameState(room.gameId);
+                        socket.emit("spectator_state", {
+                            gameState,
+                            room,
+                            isSpectator: true,
+                        });
+                    }
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
+
+        socket.on(
+            "return_to_lobby",
+            ({ roomId, userId }: { roomId: string; userId: string }) => {
+                try {
+                    moveToSpectators(roomId, userId);
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
+
+        socket.on(
+            "claim_player_slot",
+            ({
+                roomId,
+                userId,
+                targetSlotUserId,
+            }: {
+                roomId: string;
+                userId: string;
+                targetSlotUserId: string;
+            }) => {
+                try {
+                    const result = claimPlayerSlot(
+                        roomId,
+                        userId,
+                        targetSlotUserId
+                    );
+                    if (!result.success) {
+                        socket.emit("error", { error: result.error });
+                    }
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
+
+        socket.on("get_available_slots", ({ roomId }: { roomId: string }) => {
+            try {
+                const slots = getAvailableSlots(roomId);
+                socket.emit("available_slots", { slots });
             } catch (err) {
                 handleSocketError(socket, err);
             }
