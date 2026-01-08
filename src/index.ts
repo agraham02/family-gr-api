@@ -9,6 +9,8 @@ import {
     getRoom,
     handleUserDisconnect,
     kickUser,
+    leaveGame,
+    abortGame,
     promoteLeader,
     randomizeTeams,
     registerSocketUser,
@@ -245,6 +247,22 @@ function startServer() {
         socket.on("close_room", ({ roomId, userId }) => {
             try {
                 closeRoom(roomId, userId);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
+        socket.on("leave_game", ({ roomId, userId }) => {
+            try {
+                leaveGame(roomId, userId);
+            } catch (err) {
+                handleSocketError(socket, err);
+            }
+        });
+
+        socket.on("abort_game", ({ roomId, userId }) => {
+            try {
+                abortGame(roomId, userId);
             } catch (err) {
                 handleSocketError(socket, err);
             }

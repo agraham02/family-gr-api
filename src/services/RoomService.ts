@@ -346,8 +346,11 @@ export function joinRoom(
         return { room, user: existingUser };
     }
 
-    // Don't allow new users to join if game is not in lobby
-    if (room.state !== "lobby") {
+    // Allow joining if room is in lobby or if game is paused (waiting for replacement players)
+    if (
+        room.state !== "lobby" &&
+        !(room.state === "in-game" && room.isPaused)
+    ) {
         throw new Error("Cannot join: game is already in progress");
     }
 
@@ -742,4 +745,149 @@ export function closeRoom(roomId: string, userId: string): void {
     cancelScheduledRoomDeletion(roomId);
     rooms.delete(roomId);
     emitRoomEvent(room, "room_closed");
+}
+
+/**
+ * Handle a player voluntarily leaving a game.
+ * The player returns to lobby, game pauses if below minimum players.
+ * New players can join to fill the spot.
+ */
+export function leaveGame(roomId: string, userId: string): void {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+
+    const user = room.users.find((u) => u.id === userId);
+    if (!user) throw new Error("User not found in room");
+
+    const userName = user.name;
+
+    // Cancel any pending disconnect timers for this user
+    cancelLobbyDisconnectRemoval(roomId, userId);
+
+    if (isActiveGame(room)) {
+        // Notify GameManager about player leaving
+        if (room.gameId) {
+            gameManager.handlePlayerDisconnect(room.gameId, userId);
+        }
+
+        // Remove user from room completely (they're going back to lobby page,
+        // but we remove them from participants so a new player can join)
+        room.users = room.users.filter((u) => u.id !== userId);
+        delete room.readyStates[userId];
+
+        // Handle leader promotion if leaving user was leader
+        if (room.leaderId === userId && room.users.length > 0) {
+            const connectedUsers = room.users.filter(
+                (u) => u.isConnected !== false
+            );
+            const newLeader =
+                connectedUsers.length > 0 ? connectedUsers[0] : room.users[0];
+            room.leaderId = newLeader.id;
+            emitRoomEvent<{ newLeaderId: string; newLeaderName: string }>(
+                room,
+                "leader_promoted",
+                {
+                    newLeaderId: newLeader.id,
+                    newLeaderName: newLeader.name,
+                }
+            );
+        }
+
+        // Emit user_left event with voluntary flag
+        emitRoomEvent<{ userName?: string; voluntary: boolean }>(
+            room,
+            "user_left",
+            { userName, voluntary: true }
+        );
+
+        // Check if game should be paused (waiting for replacement player)
+        const hasMinPlayers = gameManager.checkMinimumPlayers(room.gameId);
+        if (!hasMinPlayers && !room.isPaused) {
+            room.isPaused = true;
+            room.pausedAt = new Date();
+            scheduleReconnectTimeout(room.id);
+            const timeoutAt = new Date(
+                room.pausedAt.getTime() + RECONNECT_TIMEOUT_MINUTES * 60 * 1000
+            );
+            emitRoomEvent<{
+                reason: string;
+                timeoutAt: string;
+            }>(room, "game_paused", {
+                reason: "waiting_for_players",
+                timeoutAt: timeoutAt.toISOString(),
+            });
+        }
+
+        // If room is now empty, schedule deletion
+        if (room.users.length === 0) {
+            scheduleRoomDeletionIfEmpty(roomId);
+        }
+
+        console.log(`User ${userName} voluntarily left game in room ${roomId}`);
+    } else {
+        // Not in active game - just remove from lobby
+        room.users = room.users.filter((u) => u.id !== userId);
+        delete room.readyStates[userId];
+
+        // Handle leader promotion
+        if (room.leaderId === userId && room.users.length > 0) {
+            room.leaderId = room.users[0].id;
+            emitRoomEvent<{ newLeaderId: string; newLeaderName: string }>(
+                room,
+                "leader_promoted",
+                {
+                    newLeaderId: room.users[0].id,
+                    newLeaderName: room.users[0].name,
+                }
+            );
+        }
+
+        emitRoomEvent<{ userName?: string; voluntary: boolean }>(
+            room,
+            "user_left",
+            { userName, voluntary: true }
+        );
+
+        if (room.users.length === 0) {
+            scheduleRoomDeletionIfEmpty(roomId);
+        }
+    }
+}
+
+/**
+ * Abort the current game and return all players to lobby.
+ * Only the leader can do this.
+ */
+export function abortGame(roomId: string, userId: string): void {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+    if (room.leaderId !== userId)
+        throw new Error("Only the leader can abort the game");
+    if (!isActiveGame(room)) throw new Error("No active game to abort");
+
+    // Cancel any reconnect timeout
+    cancelReconnectTimeout(room.id);
+
+    // Clean up game state
+    if (room.gameId) {
+        gameManager.removeGame(room.gameId);
+    }
+
+    // Return to lobby state (not "ended")
+    room.state = "lobby";
+    room.gameId = null;
+    room.isPaused = false;
+    room.pausedAt = undefined;
+
+    // Reset ready states for all users
+    room.users.forEach((user) => {
+        room.readyStates[user.id] = false;
+    });
+
+    // Emit game_aborted with "leader_ended" reason
+    emitRoomEvent<{ reason: string }>(room, "game_aborted", {
+        reason: "leader_ended",
+    });
+
+    console.log(`Game aborted by leader in room ${roomId}`);
 }
