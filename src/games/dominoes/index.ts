@@ -1,12 +1,12 @@
 // src/games/dominoes/index.ts
 
 import { Room } from "../../models/Room";
+import { GameModule, GameState, GameAction } from "../../services/GameManager";
 import {
-    GameModule,
-    GameState,
-    GameAction,
-    GameSettings,
-} from "../../services/GameManager";
+    DominoesSettings,
+    DEFAULT_DOMINOES_SETTINGS,
+    DOMINOES_SETTINGS_DEFINITIONS,
+} from "../../models/Settings";
 import { v4 as uuidv4 } from "uuid";
 import { Tile, DominoesPhase, BoardEnd } from "./types";
 import {
@@ -48,17 +48,12 @@ const DOMINOES_METADATA = {
     requiresTeams: false, // Individual play
     minPlayers: DOMINOES_TOTAL_PLAYERS,
     maxPlayers: DOMINOES_TOTAL_PLAYERS,
+    settingsDefinitions: DOMINOES_SETTINGS_DEFINITIONS,
+    defaultSettings: DEFAULT_DOMINOES_SETTINGS,
 };
 
-export interface DominoesSettings extends GameSettings {
-    winTarget: number; // Score needed to win (default 100)
-    drawFromBoneyard: boolean; // Allow drawing tiles instead of passing
-}
-
-const DEFAULT_SETTINGS: DominoesSettings = {
-    winTarget: 100,
-    drawFromBoneyard: false, // Disabled by default (block dominoes style)
-};
+// Re-export DominoesSettings for backwards compatibility
+export type { DominoesSettings } from "../../models/Settings";
 
 export interface DominoesState extends GameState {
     playOrder: string[];
@@ -94,7 +89,7 @@ function init(
 
     const playOrder = room.users.map((user) => user.id);
     const settings: DominoesSettings = {
-        ...DEFAULT_SETTINGS,
+        ...DEFAULT_DOMINOES_SETTINGS,
         ...customSettings,
     };
 

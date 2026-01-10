@@ -24,6 +24,9 @@ import {
     moveToSpectators,
     claimPlayerSlot,
     getAvailableSlots,
+    requestToJoinRoom,
+    acceptJoinRequest,
+    rejectJoinRequest,
 } from "./services/RoomService";
 import { GameAction, gameManager } from "./services/GameManager";
 import { spadesModule } from "./games/spades";
@@ -34,6 +37,15 @@ import {
     setGameSocketServer,
 } from "./webhooks/gameWebhooks";
 import { socketRateLimiter } from "./utils/rateLimiter";
+import { setIO } from "./utils/socketIO";
+import {
+    setTurnTimerSocketServer,
+    handleActionDispatched,
+    initializeGameTimer,
+    cleanupGameTimers,
+    pauseTimer,
+    resumeTimer,
+} from "./services/GameTurnTimer";
 
 const IS_DEBUG_LOGGING = process.env.NODE_ENV === "development";
 
@@ -61,8 +73,11 @@ function startServer() {
         },
     });
 
+    // Store io instance for use in REST controllers
+    setIO(io);
     setSocketServer(io);
     setGameSocketServer(io);
+    setTurnTimerSocketServer(io);
 
     io.on("connection", (socket) => {
         // Client should join a room by roomId after connecting
@@ -241,6 +256,12 @@ function startServer() {
             ({ roomId, userId, gameType, gameSettings }) => {
                 try {
                     startGame(roomId, userId, gameType, gameSettings);
+
+                    // Initialize turn timer for the new game
+                    const room = getRoom(roomId);
+                    if (room?.gameId) {
+                        initializeGameTimer(room.gameId, room);
+                    }
                 } catch (err) {
                     handleSocketError(socket, err);
                 }
@@ -262,7 +283,13 @@ function startServer() {
                         );
                     }
                     const gameId = room.gameId ?? null;
-                    gameManager.dispatch(gameId, action);
+                    const newState = gameManager.dispatch(gameId, action);
+
+                    // Handle turn timer after action
+                    if (gameId) {
+                        handleActionDispatched(gameId, room, newState, action);
+                    }
+
                     emitGameEvent(room, "sync");
                     emitPlayerGameEvent(
                         socket,
@@ -297,6 +324,11 @@ function startServer() {
 
         socket.on("close_room", ({ roomId, userId }) => {
             try {
+                // Clean up timer before closing
+                const room = getRoom(roomId);
+                if (room?.gameId) {
+                    cleanupGameTimers(room.gameId);
+                }
                 closeRoom(roomId, userId);
             } catch (err) {
                 handleSocketError(socket, err);
@@ -313,6 +345,11 @@ function startServer() {
 
         socket.on("abort_game", ({ roomId, userId }) => {
             try {
+                // Clean up timer before aborting
+                const room = getRoom(roomId);
+                if (room?.gameId) {
+                    cleanupGameTimers(room.gameId);
+                }
                 abortGame(roomId, userId);
             } catch (err) {
                 handleSocketError(socket, err);
@@ -406,6 +443,101 @@ function startServer() {
                 handleSocketError(socket, err);
             }
         });
+
+        // Private room join request handlers
+        socket.on(
+            "request_join",
+            ({
+                roomCode,
+                requesterId,
+                requesterName,
+            }: {
+                roomCode: string;
+                requesterId: string;
+                requesterName: string;
+            }) => {
+                try {
+                    const { roomId, leaderId } = requestToJoinRoom(
+                        roomCode,
+                        requesterId,
+                        requesterName
+                    );
+
+                    // Get the leader's socket to send them the request
+                    // We need to emit to the room for the leader to receive it
+                    io.to(roomId).emit("join_request", {
+                        requesterId,
+                        requesterName,
+                        roomCode,
+                        timestamp: new Date().toISOString(),
+                    });
+
+                    // Acknowledge to requester that request was sent
+                    socket.emit("join_request_sent", {
+                        success: true,
+                        message: "Join request sent to room leader.",
+                    });
+                } catch (err) {
+                    socket.emit("join_request_sent", {
+                        success: false,
+                        error:
+                            err instanceof Error
+                                ? err.message
+                                : "Failed to send request",
+                    });
+                }
+            }
+        );
+
+        socket.on(
+            "respond_join_request",
+            ({
+                roomId,
+                leaderId,
+                requesterId,
+                requesterName,
+                accepted,
+            }: {
+                roomId: string;
+                leaderId: string;
+                requesterId: string;
+                requesterName: string;
+                accepted: boolean;
+            }) => {
+                try {
+                    if (accepted) {
+                        // Accept the request and join the user
+                        const { room, user } = acceptJoinRequest(
+                            roomId,
+                            leaderId,
+                            requesterId,
+                            requesterName
+                        );
+
+                        // Emit to all clients that a new user has joined
+                        // The requester will need to connect via their own socket
+                        io.emit("join_request_response", {
+                            requesterId,
+                            accepted: true,
+                            roomCode: room.code,
+                            roomId: room.id,
+                        });
+                    } else {
+                        // Reject the request
+                        rejectJoinRequest(roomId, leaderId, requesterId);
+
+                        // Notify the requester of rejection
+                        io.emit("join_request_response", {
+                            requesterId,
+                            accepted: false,
+                            message: "Your request to join was declined.",
+                        });
+                    }
+                } catch (err) {
+                    handleSocketError(socket, err);
+                }
+            }
+        );
 
         socket.on("disconnect", () => {
             try {

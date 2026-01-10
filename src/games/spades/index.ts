@@ -1,11 +1,11 @@
 // src/games/spades.ts
 import { Room } from "../../models/Room";
+import { GameModule, GameState, GameAction } from "../../services/GameManager";
 import {
-    GameModule,
-    GameState,
-    GameAction,
-    GameSettings,
-} from "../../services/GameManager";
+    SpadesSettings,
+    DEFAULT_SPADES_SETTINGS,
+    SPADES_SETTINGS_DEFINITIONS,
+} from "../../models/Settings";
 import { v4 as uuidv4 } from "uuid";
 import { Bid, Card, Suit } from "./types";
 import {
@@ -24,6 +24,13 @@ import {
     handlePlayerDisconnect,
     checkAllPlayersConnected,
 } from "../shared";
+
+// Export auto-action helpers for TurnTimerService
+export {
+    getAutoBid,
+    getAutoPlayCard,
+    shouldTimerBeActive,
+} from "./helpers/autoAction";
 
 const SPADES_NAME = "spades";
 const SPADES_DISPLAY_NAME = "Spades";
@@ -44,6 +51,8 @@ const SPADES_METADATA = {
     maxPlayers: SPADES_TOTAL_PLAYERS,
     numTeams: spadesTeamRequirements.numTeams,
     playersPerTeam: spadesTeamRequirements.playersPerTeam,
+    settingsDefinitions: SPADES_SETTINGS_DEFINITIONS,
+    defaultSettings: DEFAULT_SPADES_SETTINGS,
 };
 
 interface InitSeed {
@@ -54,18 +63,8 @@ interface InitSeed {
     rng?: () => number; // injectable for deterministic tests
 }
 
-export interface SpadesSettings extends GameSettings {
-    allowNil: boolean;
-    bagsPenalty: number;
-    blindNilEnabled: boolean; // Allow blind nil bids (+200/-200)
-}
-
-const DEFAULT_SETTINGS: SpadesSettings = {
-    allowNil: true,
-    bagsPenalty: -100,
-    winTarget: 500,
-    blindNilEnabled: false, // Disabled by default (advanced feature)
-};
+// Re-export SpadesSettings for backwards compatibility
+export type { SpadesSettings } from "../../models/Settings";
 
 interface Team {
     players: string[];
@@ -119,6 +118,9 @@ export interface SpadesState extends GameState {
     roundTrickCounts: Record<string, number>;
     roundTeamScores: Record<number, number>; // scores for each team for the round.
     roundScoreBreakdown: Record<number, any>; // detailed breakdown for each team (e.g., bags, nil, bonuses, penalties).
+
+    /** ISO timestamp when the current turn started (for turn timer) */
+    turnStartedAt?: string;
 }
 
 function init(
@@ -147,7 +149,10 @@ function init(
         }
     }
 
-    const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
+    const settings: SpadesSettings = {
+        ...DEFAULT_SPADES_SETTINGS,
+        ...customSettings,
+    };
     const deck = buildDeck();
     const shuffledDeck = shuffleDeck(deck);
 
@@ -177,6 +182,9 @@ function init(
         roundTrickCounts: {},
         roundTeamScores: {},
         roundScoreBreakdown: {},
+
+        // Initialize turn timer
+        turnStartedAt: new Date().toISOString(),
     };
 }
 
@@ -206,6 +214,7 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 currentTrick: null, // reset here
                 lastTrickWinnerId: undefined,
                 lastTrickWinningCard: undefined,
+                turnStartedAt: new Date().toISOString(),
             };
         }
         case "SCORE_ROUND":
@@ -244,6 +253,7 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 roundTrickCounts: {},
                 roundTeamScores: {},
                 roundScoreBreakdown: {},
+                turnStartedAt: new Date().toISOString(),
             };
         }
         default:
@@ -332,6 +342,8 @@ function handlePlaceBid(
         bids: newBids,
         currentTurnIndex: nextPlayerIndex(state),
         phase: allBid ? "playing" : state.phase,
+        // Reset turn timer for next player
+        turnStartedAt: new Date().toISOString(),
     };
 }
 
@@ -495,6 +507,7 @@ function handlePlayCard(
             }
 
             // Set round summary phase and expose breakdowns
+            // Note: turnStartedAt is NOT set here - timer starts after CONTINUE_AFTER_ROUND_SUMMARY
             return {
                 ...state,
                 hands: newHands,
@@ -523,10 +536,10 @@ function handlePlayCard(
                 roundTrickCounts,
                 roundTeamScores,
                 roundScoreBreakdown: scoreBreakdown,
-                // totalTeamScores field deprecated
             };
         }
         // Show trick result before advancing
+        // Note: turnStartedAt is NOT set here - timer starts after CONTINUE_AFTER_TRICK_RESULT
         return {
             ...state,
             hands: newHands,
@@ -550,6 +563,8 @@ function handlePlayCard(
         phase: newPhase,
         lastTrickWinnerId: undefined,
         lastTrickWinningCard: undefined,
+        // Reset turn timer for next player
+        turnStartedAt: new Date().toISOString(),
     };
 }
 

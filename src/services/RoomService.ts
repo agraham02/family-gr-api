@@ -5,6 +5,19 @@ import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
 import { emitGameEvent } from "../webhooks/gameWebhooks";
 import { gameManager } from "./GameManager";
+import {
+    SettingDefinition,
+    PartialGameSettings,
+    RoomSettings,
+} from "../models/Settings";
+import {
+    notFound,
+    forbidden,
+    conflict,
+    tooManyRequests,
+    badRequest,
+} from "../utils/httpErrors";
+import { pauseTimer, resumeTimer as resumeTurnTimer } from "./GameTurnTimer";
 
 const rooms: Map<string, Room> = new Map();
 const roomCodeToId: Map<string, string> = new Map();
@@ -24,6 +37,268 @@ const reconnectTimeoutTimers: Map<string, NodeJS.Timeout> = new Map();
 const RECONNECT_TIMEOUT_MINUTES: number = Number(
     process.env.RECONNECT_TIMEOUT_MINUTES ?? 2
 );
+
+// ============================================================================
+// Settings Validation
+// ============================================================================
+
+/**
+ * Validate and normalize game settings against a game's settings definitions.
+ * - Coerces types (strings to booleans/numbers)
+ * - Clamps numeric values to min/max ranges
+ * - Applies defaults for missing properties
+ * - Ignores settings with unmet dependencies
+ */
+export function validateGameSettings(
+    gameType: string,
+    settings: Record<string, unknown>
+): PartialGameSettings {
+    const settingsData = gameManager.getSettingsForGame(gameType);
+    if (!settingsData) {
+        // Unknown game type - return settings as-is
+        return settings as PartialGameSettings;
+    }
+
+    const { definitions, defaults } = settingsData;
+    const validated: Record<string, unknown> = {};
+
+    for (const def of definitions) {
+        const rawValue = settings[def.key];
+        let value: unknown;
+
+        // Check dependency
+        if (def.dependsOn) {
+            const parentValue =
+                settings[def.dependsOn.key] ?? validated[def.dependsOn.key];
+            if (parentValue !== def.dependsOn.value) {
+                // Dependency not met - use default
+                validated[def.key] = def.default;
+                continue;
+            }
+        }
+
+        // If value not provided, use default
+        if (rawValue === undefined || rawValue === null) {
+            // For nullableNumber, null is a valid value
+            if (def.type === "nullableNumber" && rawValue === null) {
+                validated[def.key] = null;
+            } else {
+                validated[def.key] = def.default;
+            }
+            continue;
+        }
+
+        // Type coercion and validation
+        switch (def.type) {
+            case "boolean":
+                if (typeof rawValue === "boolean") {
+                    value = rawValue;
+                } else if (rawValue === "true" || rawValue === 1) {
+                    value = true;
+                } else if (rawValue === "false" || rawValue === 0) {
+                    value = false;
+                } else {
+                    value = def.default;
+                }
+                break;
+
+            case "number":
+            case "nullableNumber":
+                if (rawValue === null && def.type === "nullableNumber") {
+                    value = null;
+                } else {
+                    const num = Number(rawValue);
+                    if (isNaN(num)) {
+                        value = def.default;
+                    } else {
+                        // Clamp to min/max
+                        let clamped = num;
+                        if (def.min !== undefined)
+                            clamped = Math.max(clamped, def.min);
+                        if (def.max !== undefined)
+                            clamped = Math.min(clamped, def.max);
+                        // Round to step if specified
+                        if (def.step !== undefined && def.step > 0) {
+                            const baseValue = def.min ?? 0;
+                            clamped =
+                                Math.round((clamped - baseValue) / def.step) *
+                                    def.step +
+                                baseValue;
+                        }
+                        value = clamped;
+                    }
+                }
+                break;
+
+            case "select":
+                // Validate against options
+                const validOptions = def.options?.map((o) => o.value) ?? [];
+                if (validOptions.includes(String(rawValue))) {
+                    value = String(rawValue);
+                } else {
+                    value = def.default;
+                }
+                break;
+
+            default:
+                value = rawValue;
+        }
+
+        validated[def.key] = value;
+    }
+
+    return validated as PartialGameSettings;
+}
+
+// ============================================================================
+// Private Room Join Requests
+// ============================================================================
+
+// Track join requests for private rooms
+// Map: roomId -> Map<requesterId, { requesterName, requestedAt, attempts }>
+const joinRequests: Map<
+    string,
+    Map<string, { requesterName: string; requestedAt: Date; attempts: number }>
+> = new Map();
+
+// Rate limiting for join requests
+const JOIN_REQUEST_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const JOIN_REQUEST_MAX_ATTEMPTS = 3;
+
+/**
+ * Request to join a private room.
+ * Returns success if request is valid and leader will be notified.
+ * Throws error if rate limited or room is not private.
+ */
+export function requestToJoinRoom(
+    roomCode: string,
+    requesterId: string,
+    requesterName: string
+): { roomId: string; leaderId: string } {
+    // Normalize room code to uppercase for lookup
+    const normalizedCode = roomCode.toUpperCase();
+    const roomId = roomCodeToId.get(normalizedCode);
+    if (!roomId)
+        throw notFound(
+            "Room not found. Please check the room code and try again."
+        );
+
+    const room = rooms.get(roomId);
+    if (!room)
+        throw notFound(
+            "Room not found. Please check the room code and try again."
+        );
+
+    // Only allow requests for private rooms
+    if (!room.settings?.isPrivate) {
+        throw conflict("Room is not private. You can join directly.");
+    }
+
+    // Check if user is already in the room
+    if (room.users.find((u) => u.id === requesterId)) {
+        throw conflict("You are already in this room.");
+    }
+
+    // Check if user has been kicked
+    if (room.kickedUserIds?.includes(requesterId)) {
+        throw forbidden(
+            "You have been kicked from this room and cannot request to join."
+        );
+    }
+
+    // Check rate limiting
+    if (!joinRequests.has(roomId)) {
+        joinRequests.set(roomId, new Map());
+    }
+    const roomRequests = joinRequests.get(roomId)!;
+    const existingRequest = roomRequests.get(requesterId);
+
+    if (existingRequest) {
+        const timeSinceRequest =
+            Date.now() - existingRequest.requestedAt.getTime();
+
+        // Check cooldown
+        if (timeSinceRequest < JOIN_REQUEST_COOLDOWN_MS) {
+            const remainingSeconds = Math.ceil(
+                (JOIN_REQUEST_COOLDOWN_MS - timeSinceRequest) / 1000
+            );
+            throw tooManyRequests(
+                `Please wait ${Math.ceil(remainingSeconds / 60)} minute(s) before requesting again.`
+            );
+        }
+
+        // Check max attempts
+        if (existingRequest.attempts >= JOIN_REQUEST_MAX_ATTEMPTS) {
+            throw tooManyRequests(
+                "You have exceeded the maximum number of join requests for this room."
+            );
+        }
+    }
+
+    // Store/update the request
+    roomRequests.set(requesterId, {
+        requesterName,
+        requestedAt: new Date(),
+        attempts: (existingRequest?.attempts ?? 0) + 1,
+    });
+
+    return { roomId: room.id, leaderId: room.leaderId };
+}
+
+/**
+ * Accept a join request for a private room.
+ * Only the room leader can accept requests.
+ */
+export function acceptJoinRequest(
+    roomId: string,
+    leaderId: string,
+    requesterId: string,
+    requesterName: string
+): { room: Room; user: User } {
+    const room = rooms.get(roomId);
+    if (!room) throw notFound("Room not found.");
+
+    if (room.leaderId !== leaderId) {
+        throw forbidden("Only the room leader can accept join requests.");
+    }
+
+    // Clear the request
+    const roomRequests = joinRequests.get(roomId);
+    if (roomRequests) {
+        roomRequests.delete(requesterId);
+    }
+
+    // Join the user with bypassed private check
+    return joinRoom(room.code, requesterName, requesterId, true);
+}
+
+/**
+ * Reject a join request for a private room.
+ * Only the room leader can reject requests.
+ */
+export function rejectJoinRequest(
+    roomId: string,
+    leaderId: string,
+    requesterId: string
+): void {
+    const room = rooms.get(roomId);
+    if (!room) throw notFound("Room not found.");
+
+    if (room.leaderId !== leaderId) {
+        throw forbidden("Only the room leader can reject join requests.");
+    }
+
+    // Keep the request in the map (with its attempt count) but mark as rejected
+    // This preserves rate limiting while allowing the cooldown to reset
+}
+
+/**
+ * Get room ID from room code (used for join requests)
+ */
+export function getRoomIdByCode(roomCode: string): string | undefined {
+    // Normalize room code to uppercase for lookup
+    return roomCodeToId.get(roomCode.toUpperCase());
+}
 
 /**
  * Helper function to check if a room has an active game in progress.
@@ -197,13 +472,13 @@ export function registerSocketUser(
     // Check if the room exists first
     const room = rooms.get(roomId);
     if (!room) {
-        throw new Error("Room not found");
+        throw notFound("Room not found.");
     }
 
     // Check if user has been kicked from this room
     if (room.kickedUserIds?.includes(userId)) {
-        throw new Error(
-            "You have been kicked from this room and cannot rejoin"
+        throw forbidden(
+            "You have been kicked from this room and cannot rejoin."
         );
     }
 
@@ -231,7 +506,7 @@ export function registerSocketUser(
         // Clean up the socket mappings we just set
         socketToUser.delete(socketId);
         userToSocket.delete(userId);
-        throw new Error(
+        throw forbidden(
             "You are not a member of this room. Please join the room first."
         );
     }
@@ -296,6 +571,12 @@ export function registerSocketUser(
                 room.pausedAt = undefined;
                 room.timeoutAt = undefined;
                 cancelReconnectTimeout(room.id);
+
+                // Resume turn timer when game resumes
+                if (room.gameId) {
+                    resumeTurnTimer(room.gameId, room);
+                }
+
                 emitRoomEvent<{ userName?: string }>(room, "game_resumed", {
                     userName: user.name,
                 });
@@ -344,23 +625,37 @@ export async function createRoom(
 export function joinRoom(
     roomCode: string,
     userName: string,
-    userId?: string
+    userId?: string,
+    bypassPrivateCheck?: boolean // Used when accepting a join request
 ): { room: Room; user: User } {
-    const roomId = roomCodeToId.get(roomCode);
+    // Normalize room code to uppercase for lookup
+    const normalizedCode = roomCode.toUpperCase();
+    const roomId = roomCodeToId.get(normalizedCode);
     const room = roomId ? rooms.get(roomId) : undefined;
-    if (!room) throw new Error("Room not found");
+    if (!room)
+        throw notFound(
+            "Room not found. Please check the room code and try again."
+        );
 
     // Check if user has been kicked from this room
     if (userId && room.kickedUserIds?.includes(userId)) {
-        throw new Error(
-            "You have been kicked from this room and cannot rejoin"
+        throw forbidden(
+            "You have been kicked from this room and cannot rejoin."
+        );
+    }
+
+    // Check if room is private (unless bypassing for accepted requests)
+    const existingUser = room.users.find((u) => u.id === userId);
+    if (!existingUser && room.settings?.isPrivate && !bypassPrivateCheck) {
+        throw forbidden(
+            "This room is private. Please request to join.",
+            "PRIVATE_ROOM"
         );
     }
 
     // If a deletion was scheduled (room had been empty), cancel it now
     cancelScheduledRoomDeletion(room.id);
 
-    const existingUser = room.users.find((u) => u.id === userId);
     if (existingUser) {
         console.log(`User ${userName} already in room ${room.id}`);
 
@@ -387,13 +682,13 @@ export function joinRoom(
         room.state !== "lobby" &&
         !(room.state === "in-game" && room.isPaused)
     ) {
-        throw new Error("Cannot join: game is already in progress");
+        throw conflict("Cannot join: game is already in progress.");
     }
 
     // Check max players limit
     const maxPlayers = room.settings?.maxPlayers;
     if (maxPlayers && room.users.length >= maxPlayers) {
-        throw new Error(`Room is full (max ${maxPlayers} players)`);
+        throw conflict(`Room is full (max ${maxPlayers} players).`);
     }
 
     const user: User = {
@@ -477,6 +772,12 @@ export function handleUserDisconnect(socketId: string): void {
             );
             room.timeoutAt = timeoutAt;
             scheduleReconnectTimeout(room.id);
+
+            // Pause turn timer when game is paused
+            if (room.gameId) {
+                pauseTimer(room.gameId);
+            }
+
             emitRoomEvent<{
                 userName?: string;
                 reason: string;
@@ -564,9 +865,9 @@ export function setReadyState(
     ready: boolean
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (!room.users.find((u) => u.id === userId))
-        throw new Error("User not in room");
+        throw forbidden("User not in room.");
 
     room.readyStates[userId] = ready;
     emitRoomEvent<{ userId: string; ready: boolean }>(
@@ -581,9 +882,9 @@ export function setReadyState(
 
 export function toggleReadyState(roomId: string, userId: string): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (!room.users.find((u) => u.id === userId))
-        throw new Error("User not in room");
+        throw forbidden("User not in room.");
 
     room.readyStates[userId] = !room.readyStates[userId];
     emitRoomEvent<{ userId: string; ready: boolean }>(
@@ -602,11 +903,11 @@ export function promoteLeader(
     newLeaderId: string
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can promote a new leader");
+        throw forbidden("Only the current leader can promote a new leader.");
     if (!room.users.find((u) => u.id === newLeaderId))
-        throw new Error("New leader must be a participant in the room");
+        throw badRequest("New leader must be a participant in the room.");
 
     room.leaderId = newLeaderId;
     emitRoomEvent<{ newLeaderId: string }>(room, "leader_promoted", {
@@ -620,9 +921,9 @@ export function selectGame(
     gameType: string = "spades"
 ) {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can select a game");
+        throw forbidden("Only the current leader can select a game.");
 
     if (room.selectedGameType === gameType) {
         // If the same game is selected, clear the selection
@@ -635,18 +936,22 @@ export function selectGame(
 }
 
 /**
- * Update room settings (maxPlayers, pauseTimeoutSeconds).
+ * Update room settings (maxPlayers, pauseTimeoutSeconds, isPrivate).
  * Only the room leader can update settings.
  */
 export function updateRoomSettings(
     roomId: string,
     userId: string,
-    settings: { maxPlayers?: number; pauseTimeoutSeconds?: number }
+    settings: {
+        maxPlayers?: number;
+        pauseTimeoutSeconds?: number;
+        isPrivate?: boolean;
+    }
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can update room settings");
+        throw forbidden("Only the current leader can update room settings.");
 
     room.settings = {
         ...room.settings,
@@ -659,6 +964,7 @@ export function updateRoomSettings(
 /**
  * Update game settings (winTarget, allowNil, etc.).
  * Only the room leader can update settings.
+ * Settings are validated against the game's settings definitions.
  * Settings are persisted to the room and used when starting games.
  */
 export function updateGameSettings(
@@ -667,13 +973,18 @@ export function updateGameSettings(
     gameSettings: Record<string, unknown>
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can update game settings");
+        throw forbidden("Only the current leader can update game settings.");
+
+    // Validate settings if a game type is selected
+    const validatedSettings = room.selectedGameType
+        ? validateGameSettings(room.selectedGameType, gameSettings)
+        : gameSettings;
 
     room.gameSettings = {
         ...room.gameSettings,
-        ...gameSettings,
+        ...validatedSettings,
     };
 
     emitRoomEvent(room, "game_settings_updated", {
@@ -691,11 +1002,11 @@ export function kickUser(
     targetUserId: string
 ): { kickedSocketId: string | undefined } {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can kick a user");
+        throw forbidden("Only the current leader can kick a user.");
     if (!room.users.find((u) => u.id === targetUserId))
-        throw new Error("User not found in room");
+        throw notFound("User not found in room.");
 
     const kickedUser = room.users.find((u) => u.id === targetUserId);
     const kickedUserName = kickedUser?.name;
@@ -816,9 +1127,9 @@ export function setTeams(
     teams: string[][]
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can set teams");
+        throw forbidden("Only the current leader can set teams.");
 
     // Validate teams using per-game logic (partial assignments allowed)
     const allUserIds = room.users.map((u) => u.id);
@@ -830,20 +1141,20 @@ export function setTeams(
 
 export function randomizeTeams(roomId: string, userId: string): string[][] {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can randomize teams");
+        throw forbidden("Only the current leader can randomize teams.");
 
     // Only works for games with team requirements
     const module = gameManager.getGameModule(room.selectedGameType);
-    if (!module) throw new Error("Game module not found");
+    if (!module) throw notFound("Game module not found.");
 
     const requirements = {
         numTeams: module.metadata.numTeams ?? 0,
         playersPerTeam: module.metadata.playersPerTeam ?? 0,
     };
     if (requirements.numTeams < 1) {
-        throw new Error("This game does not support teams.");
+        throw badRequest("This game does not support teams.");
     }
 
     const userIds = room.users.map((u) => u.id);
@@ -870,17 +1181,19 @@ export function startGame(
     customSettings?: any
 ): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can start the game");
+        throw forbidden("Only the current leader can start the game.");
     if (Object.values(room.readyStates).some((ready) => !ready))
-        throw new Error("Not all players are ready");
+        throw badRequest("Not all players are ready.");
 
     // Validate teams are complete for team-based games
     const module = gameManager.getGameModule(gameType);
     if (module && module.metadata.numTeams && module.metadata.numTeams > 0) {
         if (!room.teams || room.teams.length === 0) {
-            throw new Error("Teams must be assigned before starting the game");
+            throw badRequest(
+                "Teams must be assigned before starting the game."
+            );
         }
         const allUserIds = room.users.map((u) => u.id);
         validateTeamsForGame(gameType, room.teams, allUserIds, true);
@@ -906,12 +1219,15 @@ export function startGame(
 
 export function closeRoom(roomId: string, userId: string): void {
     const room = getRoom(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the current leader can close the room");
+        throw forbidden("Only the current leader can close the room.");
 
     // Clear any scheduled deletion before closing
     cancelScheduledRoomDeletion(roomId);
+
+    // Clean up join requests to prevent memory leak
+    joinRequests.delete(roomId);
     rooms.delete(roomId);
     emitRoomEvent(room, "room_closed");
 }
@@ -923,10 +1239,10 @@ export function closeRoom(roomId: string, userId: string): void {
  */
 export function leaveGame(roomId: string, userId: string): void {
     const room = rooms.get(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
 
     const user = room.users.find((u) => u.id === userId);
-    if (!user) throw new Error("User not found in room");
+    if (!user) throw notFound("User not found in room.");
 
     const userName = user.name;
 
@@ -1037,10 +1353,10 @@ export function leaveGame(roomId: string, userId: string): void {
  */
 export function abortGame(roomId: string, userId: string): void {
     const room = rooms.get(roomId);
-    if (!room) throw new Error("Room not found");
+    if (!room) throw notFound("Room not found.");
     if (room.leaderId !== userId)
-        throw new Error("Only the leader can abort the game");
-    if (!isActiveGame(room)) throw new Error("No active game to abort");
+        throw forbidden("Only the leader can abort the game.");
+    if (!isActiveGame(room)) throw conflict("No active game to abort.");
 
     // Cancel any reconnect timeout
     cancelReconnectTimeout(room.id);
@@ -1079,13 +1395,18 @@ export function addSpectator(
     userName: string,
     userId?: string
 ): { room: Room; user: User; isSpectator: true } {
-    const roomId = roomCodeToId.get(roomCode);
+    // Normalize room code to uppercase for lookup
+    const normalizedCode = roomCode.toUpperCase();
+    const roomId = roomCodeToId.get(normalizedCode);
     const room = roomId ? rooms.get(roomId) : undefined;
-    if (!room) throw new Error("Room not found");
+    if (!room)
+        throw notFound(
+            "Room not found. Please check the room code and try again."
+        );
 
     // Can only spectate if game is in progress
     if (!isActiveGame(room)) {
-        throw new Error("No active game to spectate");
+        throw conflict("No active game to spectate.");
     }
 
     // Check if already a spectator
@@ -1100,7 +1421,7 @@ export function addSpectator(
     // Check if already a player in the game
     const existingPlayer = room.users.find((u) => u.id === userId);
     if (existingPlayer) {
-        throw new Error("You are already a player in this game");
+        throw conflict("You are already a player in this game.");
     }
 
     const user: User = {
@@ -1134,15 +1455,15 @@ export function addSpectator(
  */
 export function moveToSpectators(roomId: string, userId: string): void {
     const room = rooms.get(roomId);
-    if (!room) throw new Error("Room not found");
-    if (!isActiveGame(room)) throw new Error("No active game");
+    if (!room) throw notFound("Room not found.");
+    if (!isActiveGame(room)) throw conflict("No active game.");
 
     const user = room.users.find((u) => u.id === userId);
-    if (!user) throw new Error("User not found in room");
+    if (!user) throw notFound("User not found in room.");
 
     // Check if already a spectator
     if (room.spectators?.includes(userId)) {
-        throw new Error("User is already a spectator");
+        throw conflict("User is already a spectator.");
     }
 
     // Initialize spectators array if not exists

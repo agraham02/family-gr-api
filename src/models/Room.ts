@@ -1,19 +1,16 @@
 import { User } from "./User";
+import {
+    RoomSettings,
+    PartialGameSettings,
+    DEFAULT_ROOM_SETTINGS,
+} from "./Settings";
 
-export interface RoomSettings {
-    maxPlayers?: number; // Maximum number of players allowed in the room (null = unlimited)
-    pauseTimeoutSeconds?: number; // Timeout in seconds before aborting a paused game (default: 60)
-}
-
-export interface GameSettings {
-    // Dominoes settings
-    winTarget?: number;
-    drawFromBoneyard?: boolean;
-    // Spades settings
-    allowNil?: boolean;
-    blindNilEnabled?: boolean;
-    bagsPenalty?: number;
-}
+// Re-export settings types for backwards compatibility
+export type {
+    RoomSettings,
+    PartialGameSettings as GameSettings,
+} from "./Settings";
+export { DEFAULT_ROOM_SETTINGS } from "./Settings";
 
 export interface Room {
     id: string;
@@ -28,7 +25,7 @@ export interface Room {
     createdAt: Date;
     teams?: string[][]; // Array of teams, each team is an array of userIds
     settings?: RoomSettings; // Room-level settings
-    gameSettings?: GameSettings; // Game-specific settings (persisted across games)
+    gameSettings?: PartialGameSettings; // Game-specific settings (persisted across games)
     isPaused?: boolean; // Track if game is paused due to disconnections
     pausedAt?: Date; // Timestamp when game was paused (for timeout countdown)
     timeoutAt?: Date; // Timestamp when the pause timeout expires (for countdown on client)

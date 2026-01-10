@@ -1,9 +1,14 @@
 // src/services/GameManager.ts
 import { Room } from "../models/Room";
 import { User } from "../models/User";
+import {
+    SettingDefinition,
+    BaseGameSettings,
+    PartialGameSettings,
+} from "../models/Settings";
 
 export interface GameModule {
-    init(room: Room, customSettings?: GameSettings): GameState;
+    init(room: Room, customSettings?: PartialGameSettings): GameState;
     reducer(state: GameState, action: GameAction): GameState;
     getState(state: GameState): any;
     getPlayerState(state: GameState, userId: string): any;
@@ -13,11 +18,14 @@ export interface GameModule {
     metadata: {
         type: string;
         displayName: string;
+        description?: string;
         requiresTeams: boolean;
         minPlayers: number;
         maxPlayers: number;
         numTeams?: number;
         playersPerTeam?: number;
+        settingsDefinitions?: SettingDefinition[];
+        defaultSettings?: BaseGameSettings;
     };
 }
 
@@ -27,17 +35,15 @@ export interface GameState {
     id: string;
     roomId: string;
     type: string;
-    settings: GameSettings;
+    settings: BaseGameSettings;
     players: GamePlayers;
     history?: string[]; // Optional history for game actions
     leaderId: string;
     // ...other game-specific state
 }
 
-export interface GameSettings {
-    winTarget: number;
-    // ...other common settings
-}
+// Re-export for backwards compatibility
+export type GameSettings = PartialGameSettings;
 
 export interface GameAction {
     type: string;
@@ -55,6 +61,28 @@ class GameManager {
 
     public getGameModule(type: string): GameModule | undefined {
         return this.modules.get(type);
+    }
+
+    /**
+     * Get settings definitions and defaults for a game type.
+     * Used by the API to expose settings schema to clients.
+     */
+    public getSettingsForGame(
+        type: string
+    ):
+        | { definitions: SettingDefinition[]; defaults: BaseGameSettings }
+        | undefined {
+        const module = this.modules.get(type);
+        if (!module) return undefined;
+
+        return {
+            definitions: module.metadata.settingsDefinitions || [],
+            defaults: module.metadata.defaultSettings || {
+                winTarget: 100,
+                roundLimit: null,
+                turnTimeLimit: null,
+            },
+        };
     }
 
     registerGameModule(type: string, module: GameModule): void {

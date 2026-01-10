@@ -1,9 +1,22 @@
 // Centralized error handler middleware
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from "express";
 
-export function errorHandler(err: any, req: Request, res: Response, next: NextFunction) {
+export function errorHandler(
+    err: any,
+    req: Request,
+    res: Response,
+    next: NextFunction
+) {
     console.error(err);
-    res.status(err.status || 500).json({
-        error: err.message || 'Internal Server Error',
-    });
+
+    const response: { error: string; code?: string } = {
+        error: err.message || "Internal Server Error",
+    };
+
+    // Include error code if present (e.g., PRIVATE_ROOM, RATE_LIMITED)
+    if (err.code) {
+        response.code = err.code;
+    }
+
+    res.status(err.status || 500).json(response);
 }
