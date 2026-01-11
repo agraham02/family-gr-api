@@ -8,12 +8,11 @@ import {
     DOMINOES_SETTINGS_DEFINITIONS,
 } from "../../models/Settings";
 import { v4 as uuidv4 } from "uuid";
-import { Tile, DominoesPhase, BoardEnd } from "./types";
+import { Tile, DominoesPhase } from "./types";
 import {
     buildDominoSet,
     dealTilesToPlayers,
     findPlayerWithHighestDouble,
-    getHighestDouble,
     shuffleTiles,
 } from "./helpers/tile";
 import { omitFields } from "../../utils/omitFields";
@@ -25,11 +24,7 @@ import {
     initializeBoard,
     placeTileOnBoard,
 } from "./helpers/board";
-import {
-    calculateRoundScores,
-    checkWinCondition,
-    getHandPipCount,
-} from "./helpers/score";
+import { calculateRoundScores, checkWinCondition } from "./helpers/score";
 import {
     handlePlayerReconnect,
     handlePlayerDisconnect,

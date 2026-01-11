@@ -232,7 +232,7 @@ export function handleActionDispatched(
     gameId: string,
     room: Room,
     newState: GameState,
-    action: GameAction
+    _action: GameAction
 ): void {
     // Cancel any existing timer (action was received in time)
     cancelTimer(gameId);

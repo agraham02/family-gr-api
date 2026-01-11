@@ -43,8 +43,6 @@ import {
     handleActionDispatched,
     initializeGameTimer,
     cleanupGameTimers,
-    pauseTimer,
-    resumeTimer,
 } from "./services/GameTurnTimer";
 
 const IS_DEBUG_LOGGING = process.env.NODE_ENV === "development";
@@ -84,13 +82,13 @@ function startServer() {
         console.log(`New client connected: ${socket.id}`);
 
         // Rate limiting middleware for all socket events
-        socket.use(([event, ...args], next) => {
+        socket.use(([event, ..._args], next) => {
             // Skip rate limiting for disconnect-related events
             if (event === "disconnect" || event === "disconnecting") {
                 return next();
             }
 
-            const { allowed, remaining } = socketRateLimiter.consume(socket.id);
+            const { allowed } = socketRateLimiter.consume(socket.id);
             if (!allowed) {
                 console.warn(
                     `Rate limit exceeded for socket ${socket.id} on event ${event}`
@@ -462,7 +460,7 @@ function startServer() {
                 requesterName: string;
             }) => {
                 try {
-                    const { roomId, leaderId } = requestToJoinRoom(
+                    const { roomId } = requestToJoinRoom(
                         roomCode,
                         requesterId,
                         requesterName
@@ -512,7 +510,7 @@ function startServer() {
                 try {
                     if (accepted) {
                         // Accept the request and join the user
-                        const { room, user } = acceptJoinRequest(
+                        const { room } = acceptJoinRequest(
                             roomId,
                             leaderId,
                             requesterId,
@@ -557,7 +555,6 @@ function startServer() {
     });
 
     httpServer.listen(PORT, () => {
-        // eslint-disable-next-line no-console
         console.log(`Server and Socket.io running on port ${PORT}`);
     });
 }

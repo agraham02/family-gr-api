@@ -5,11 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { emitRoomEvent } from "../webhooks/roomWebhooks";
 import { emitGameEvent } from "../webhooks/gameWebhooks";
 import { gameManager } from "./GameManager";
-import {
-    SettingDefinition,
-    PartialGameSettings,
-    RoomSettings,
-} from "../models/Settings";
+import { PartialGameSettings } from "../models/Settings";
 import {
     notFound,
     forbidden,
@@ -27,9 +23,9 @@ const socketToUser: Map<string, { roomId: string; userId: string }> = new Map();
 const userToSocket: Map<string, string> = new Map();
 // Track scheduled deletions for empty rooms
 const roomDeletionTimers: Map<string, NodeJS.Timeout> = new Map();
-// Configurable TTL in seconds before deleting an empty room (default: 60 seconds = 1 minute)
+// Configurable TTL in seconds before deleting an empty room (default: 300 seconds = 5 minutes)
 const ROOM_EMPTY_TTL_SECONDS: number = Number(
-    process.env.ROOM_EMPTY_TTL_SECONDS ?? 60
+    process.env.ROOM_EMPTY_TTL_SECONDS ?? 300
 );
 // Track reconnection timeout timers for paused games
 const reconnectTimeoutTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -59,7 +55,7 @@ export function validateGameSettings(
         return settings as PartialGameSettings;
     }
 
-    const { definitions, defaults } = settingsData;
+    const { definitions } = settingsData;
     const validated: Record<string, unknown> = {};
 
     for (const def of definitions) {
@@ -279,7 +275,7 @@ export function acceptJoinRequest(
 export function rejectJoinRequest(
     roomId: string,
     leaderId: string,
-    requesterId: string
+    _requesterId: string
 ): void {
     const room = rooms.get(roomId);
     if (!room) throw notFound("Room not found.");

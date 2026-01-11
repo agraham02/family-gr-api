@@ -1,4 +1,4 @@
-import { SpadesState, Trick, SpadesSettings } from "../index";
+import { SpadesState, Trick } from "../index";
 import { Bid } from "../types";
 
 interface TeamScoreBreakdown {

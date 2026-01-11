@@ -1,16 +1,11 @@
 import { User } from "./User";
-import {
-    RoomSettings,
-    PartialGameSettings,
-    DEFAULT_ROOM_SETTINGS,
-} from "./Settings";
+import { RoomSettings, PartialGameSettings } from "./Settings";
 
 // Re-export settings types for backwards compatibility
 export type {
     RoomSettings,
     PartialGameSettings as GameSettings,
 } from "./Settings";
-export { DEFAULT_ROOM_SETTINGS } from "./Settings";
 
 export interface Room {
     id: string;

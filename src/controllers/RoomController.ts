@@ -74,7 +74,7 @@ export async function requestJoinRoom(
         }
 
         // This will throw if rate-limited or room not found
-        const { roomId, leaderId } = RoomService.requestToJoinRoom(
+        const { roomId } = RoomService.requestToJoinRoom(
             roomCode,
             requesterId,
             requesterName

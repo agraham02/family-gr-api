@@ -6,7 +6,7 @@
  */
 
 import { SpadesState, Trick } from "..";
-import { Card, Suit, Bid } from "../types";
+import { Card, Bid } from "../types";
 import { canPlayCard } from "./player";
 
 /**
@@ -17,7 +17,7 @@ import { canPlayCard } from "./player";
  * @param playerId - The player who timed out
  * @returns The bid to place
  */
-export function getAutoBid(state: SpadesState, playerId: string): Bid {
+export function getAutoBid(state: SpadesState, _playerId: string): Bid {
     // If nil is allowed, bid 0 (nil)
     // Otherwise bid 1 (minimum non-nil bid)
     const nilAllowed = state.settings.allowNil;

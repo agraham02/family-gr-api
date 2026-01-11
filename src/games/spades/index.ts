@@ -55,14 +55,6 @@ const SPADES_METADATA = {
     defaultSettings: DEFAULT_SPADES_SETTINGS,
 };
 
-interface InitSeed {
-    gameId: string; // unique game identifier
-    roster: string[]; // clockwise seat order, length 4
-    dealerIndex: number; // seat who shuffled & offered cut
-    // settings?: Partial<SpadesSettings>;
-    rng?: () => number; // injectable for deterministic tests
-}
-
 // Re-export SpadesSettings for backwards compatibility
 export type { SpadesSettings } from "../../models/Settings";
 
@@ -184,7 +176,11 @@ function init(
         roundTrickCounts: {},
         roundTeamScores: {},
         roundScoreBreakdown: {},
-        teamEligibleForBlind: {}, // Will be calculated at round start
+        // Initialize teamEligibleForBlind - on first round, all teams start at 0 so no one is eligible
+        // This is recalculated at the start of each subsequent round
+        teamEligibleForBlind: Object.fromEntries(
+            Object.keys(teams).map((teamId) => [Number(teamId), false])
+        ),
 
         // Initialize turn timer
         turnStartedAt: new Date().toISOString(),
@@ -524,10 +520,10 @@ function handlePlayCard(
             ));
 
     // 9. If trick is complete, resolve winner and show result
-    let newCurrentTrick: Trick | null = newTrick;
+    const newCurrentTrick: Trick | null = newTrick;
     let newCompletedTricks = state.completedTricks;
     let newCurrentTurnIndex = nextPlayerIndex(state);
-    let newPhase: SpadesPhases = state.phase;
+    const newPhase: SpadesPhases = state.phase;
     let lastTrickWinnerId: string | undefined = undefined;
     let lastTrickWinningCard: Card | undefined = undefined;
     if (newTrick.plays.length === state.playOrder.length) {

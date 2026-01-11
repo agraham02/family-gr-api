@@ -3,7 +3,6 @@
    --------------------------------------------------------------------- */
 
 import { SpadesState } from "..";
-import { User } from "../../../models/User";
 import { SpadesSettings } from "../../../models/Settings";
 import { GamePlayers } from "../../../services/GameManager";
 import { shuffle } from "../../shared";
@@ -134,6 +133,11 @@ function sortHand(hand: Card[], settings?: SpadesSettings): Card[] {
 
 /* ––––––––––––––––  SMALL UTILITIES –––––––––––––––––– */
 
+// Named constants for special card rank values
+const RANK_VALUE_BIG_JOKER = 1000;
+const RANK_VALUE_LITTLE_JOKER = 999;
+const RANK_VALUE_DEUCE_OF_SPADES_HIGH = 998;
+
 /**
  * Get numerical rank value for a card, with settings affecting hierarchy:
  * - Jokers (if enabled): Big Joker (highest) > Little Joker
@@ -144,10 +148,10 @@ function getCardRankValue(card: Card, settings: SpadesSettings): number {
     const { jokersEnabled, deuceOfSpadesHigh } = settings;
 
     // Big Joker is always highest if jokers enabled
-    if (jokersEnabled && card.rank === Rank.BigJoker) return 1000;
+    if (jokersEnabled && card.rank === Rank.BigJoker) return RANK_VALUE_BIG_JOKER;
 
     // Little Joker is second highest if jokers enabled
-    if (jokersEnabled && card.rank === Rank.LittleJoker) return 999;
+    if (jokersEnabled && card.rank === Rank.LittleJoker) return RANK_VALUE_LITTLE_JOKER;
 
     // Deuce of Spades gets special treatment if deuceOfSpadesHigh enabled
     if (
@@ -155,7 +159,7 @@ function getCardRankValue(card: Card, settings: SpadesSettings): number {
         card.rank === Rank.Two &&
         card.suit === Suit.Spades
     ) {
-        return 998; // Above Ace, below jokers
+        return RANK_VALUE_DEUCE_OF_SPADES_HIGH;
     }
 
     // Standard rank order
@@ -167,7 +171,7 @@ export function nextPlayerIndex(state: SpadesState): number {
     return (state.currentTurnIndex + 1) % state.playOrder.length;
 }
 
-export function nextPlayerId(state: SpadesState, id: string): string {
+export function nextPlayerId(state: SpadesState, _id: string): string {
     return state.playOrder[nextPlayerIndex(state)];
 }
 
