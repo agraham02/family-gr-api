@@ -1,11 +1,11 @@
 // src/games/spades.ts
 import { Room } from "../../models/Room";
+import { GameModule, GameState, GameAction } from "../../services/GameManager";
 import {
-    GameModule,
-    GameState,
-    GameAction,
-    GameSettings,
-} from "../../services/GameManager";
+    SpadesSettings,
+    DEFAULT_SPADES_SETTINGS,
+    SPADES_SETTINGS_DEFINITIONS,
+} from "../../models/Settings";
 import { v4 as uuidv4 } from "uuid";
 import { Bid, Card, Suit } from "./types";
 import {
@@ -19,6 +19,18 @@ import { omitFields } from "../../utils/omitFields";
 import { canPlayCard, resolveTrick } from "./helpers/player";
 import { User } from "../../models/User";
 import { calculateSpadesScores } from "./helpers/score";
+import {
+    handlePlayerReconnect,
+    handlePlayerDisconnect,
+    checkAllPlayersConnected,
+} from "../shared";
+
+// Export auto-action helpers for TurnTimerService
+export {
+    getAutoBid,
+    getAutoPlayCard,
+    shouldTimerBeActive,
+} from "./helpers/autoAction";
 
 const SPADES_NAME = "spades";
 const SPADES_DISPLAY_NAME = "Spades";
@@ -32,35 +44,24 @@ const SPADES_TOTAL_PLAYERS =
 const SPADES_METADATA = {
     type: SPADES_NAME,
     displayName: SPADES_DISPLAY_NAME,
+    description:
+        "A trick-taking card game played in teams of two. Bid on how many tricks you'll win, then play to make your bid!",
     requiresTeams: true,
     minPlayers: SPADES_TOTAL_PLAYERS,
     maxPlayers: SPADES_TOTAL_PLAYERS,
     numTeams: spadesTeamRequirements.numTeams,
     playersPerTeam: spadesTeamRequirements.playersPerTeam,
+    settingsDefinitions: SPADES_SETTINGS_DEFINITIONS,
+    defaultSettings: DEFAULT_SPADES_SETTINGS,
 };
 
-interface InitSeed {
-    gameId: string; // unique game identifier
-    roster: string[]; // clockwise seat order, length 4
-    dealerIndex: number; // seat who shuffled & offered cut
-    // settings?: Partial<SpadesSettings>;
-    rng?: () => number; // injectable for deterministic tests
-}
-
-export interface SpadesSettings extends GameSettings {
-    allowNil: boolean;
-    bagsPenalty: number;
-}
-
-const DEFAULT_SETTINGS: SpadesSettings = {
-    allowNil: true,
-    bagsPenalty: -100,
-    winTarget: 500,
-};
+// Re-export SpadesSettings for backwards compatibility
+export type { SpadesSettings } from "../../models/Settings";
 
 interface Team {
     players: string[];
     score: number;
+    accumulatedBags: number;
     nil?: boolean;
 }
 
@@ -110,6 +111,10 @@ export interface SpadesState extends GameState {
     roundTrickCounts: Record<string, number>;
     roundTeamScores: Record<number, number>; // scores for each team for the round.
     roundScoreBreakdown: Record<number, any>; // detailed breakdown for each team (e.g., bags, nil, bonuses, penalties).
+    teamEligibleForBlind: Record<number, boolean>; // which teams are eligible for blind bids (100+ behind)
+
+    /** ISO timestamp when the current turn started (for turn timer) */
+    turnStartedAt?: string;
 }
 
 function init(
@@ -123,7 +128,7 @@ function init(
     const teams: Record<number, Team> = Object.fromEntries(
         room.teams?.map((team, index) => [
             index,
-            { players: team, score: 0 },
+            { players: team, score: 0, accumulatedBags: 0 },
         ]) || []
     );
 
@@ -138,8 +143,11 @@ function init(
         }
     }
 
-    const settings: SpadesSettings = { ...DEFAULT_SETTINGS, ...customSettings };
-    const deck = buildDeck();
+    const settings: SpadesSettings = {
+        ...DEFAULT_SPADES_SETTINGS,
+        ...customSettings,
+    };
+    const deck = buildDeck(settings.jokersEnabled);
     const shuffledDeck = shuffleDeck(deck);
 
     return {
@@ -154,7 +162,7 @@ function init(
         dealerIndex,
         currentTurnIndex: dealerIndex,
 
-        hands: dealCardsToPlayers(shuffledDeck, players),
+        hands: dealCardsToPlayers(shuffledDeck, players, settings),
         bids: {},
 
         spadesBroken: false,
@@ -168,7 +176,36 @@ function init(
         roundTrickCounts: {},
         roundTeamScores: {},
         roundScoreBreakdown: {},
+        // Initialize teamEligibleForBlind - on first round, all teams start at 0 so no one is eligible
+        // This is recalculated at the start of each subsequent round
+        teamEligibleForBlind: Object.fromEntries(
+            Object.keys(teams).map((teamId) => [Number(teamId), false])
+        ),
+
+        // Initialize turn timer
+        turnStartedAt: new Date().toISOString(),
     };
+}
+
+/**
+ * Calculate which teams are eligible for blind bids (100+ points behind leader)
+ */
+function calculateTeamEligibility(
+    teams: Record<number, Team>
+): Record<number, boolean> {
+    const teamScores = Object.entries(teams).map(([teamId, team]) => ({
+        teamId: Number(teamId),
+        score: team.score,
+    }));
+
+    const maxScore = Math.max(...teamScores.map((t) => t.score), 0);
+
+    const eligibility: Record<number, boolean> = {};
+    teamScores.forEach(({ teamId, score }) => {
+        eligibility[teamId] = maxScore - score >= 100;
+    });
+
+    return eligibility;
 }
 
 function reducer(state: SpadesState, action: GameAction): SpadesState {
@@ -197,6 +234,7 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 currentTrick: null, // reset here
                 lastTrickWinnerId: undefined,
                 lastTrickWinningCard: undefined,
+                turnStartedAt: new Date().toISOString(),
             };
         }
         case "SCORE_ROUND":
@@ -210,12 +248,16 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             const nextDealerIndex =
                 (state.dealerIndex + 1) % state.playOrder.length;
             // Shuffle and deal new hands
-            const deck = buildDeck();
+            const deck = buildDeck(state.settings.jokersEnabled);
             const shuffledDeck = shuffleDeck(deck);
             const newHandsForNextRound = dealCardsToPlayers(
                 shuffledDeck,
-                state.players
+                state.players,
+                state.settings
             );
+            // Calculate team eligibility for blind bids (100+ points behind)
+            const teamEligibleForBlind = calculateTeamEligibility(state.teams);
+
             // Reset bids, tricks, spadesBroken, etc.
             return {
                 ...state,
@@ -235,6 +277,8 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 roundTrickCounts: {},
                 roundTeamScores: {},
                 roundScoreBreakdown: {},
+                teamEligibleForBlind,
+                turnStartedAt: new Date().toISOString(),
             };
         }
         default:
@@ -271,6 +315,9 @@ export const spadesModule: GameModule = {
     reducer,
     getState,
     getPlayerState,
+    checkMinimumPlayers,
+    handlePlayerReconnect,
+    handlePlayerDisconnect,
     metadata: SPADES_METADATA,
 };
 
@@ -295,12 +342,98 @@ function handlePlaceBid(
     }
     // Validate player
     if (!state.playOrder.some((pid) => pid === playerId)) {
-        throw new Error("Invalid player ID for this game.");
+        throw new Error("You're not in this game.");
     }
-    // Validate bid (basic: must be a number, >= 0)
-    if (typeof bid.amount !== "number" || bid.amount < 0) {
-        throw new Error("Bid amount must be a non-negative number.");
+    // Check if player is connected
+    if (state.players[playerId]?.isConnected === false) {
+        throw new Error("You've been disconnected. Please refresh to rejoin.");
     }
+    // Validate bid (must be a number between 0 and 13, as there are only 13 tricks possible)
+    if (typeof bid.amount !== "number" || bid.amount < 0 || bid.amount > 13) {
+        throw new Error("Bid must be between 0 and 13 tricks.");
+    }
+
+    // Find player's team
+    const playerTeam = Object.entries(state.teams).find(([_, team]) =>
+        team.players.includes(playerId)
+    );
+    const playerTeamId = playerTeam ? Number(playerTeam[0]) : undefined;
+
+    if (playerTeamId === undefined) {
+        throw new Error("You're not on a team.");
+    }
+
+    // Validate bid type
+    if (bid.type === "nil") {
+        // Nil bids must have amount of 0
+        if (bid.amount !== 0) {
+            throw new Error("Nil bid must have amount of 0.");
+        }
+        // Nil must be enabled in settings
+        if (!state.settings.allowNil) {
+            throw new Error("Nil bids are not allowed in this game.");
+        }
+        // Nil cannot be blind (that's blind-nil)
+        if (bid.isBlind) {
+            throw new Error("Use blind-nil bid type for blind nil bids.");
+        }
+    } else if (bid.type === "blind-nil") {
+        // Blind nil bids must have amount of 0
+        if (bid.amount !== 0) {
+            throw new Error("Blind nil bid must have amount of 0.");
+        }
+        // Blind nil must be enabled in settings
+        if (!state.settings.blindNilEnabled) {
+            throw new Error("Blind nil bids are not allowed in this game.");
+        }
+        // Blind nil requires allowNil as well
+        if (!state.settings.allowNil) {
+            throw new Error("Blind nil requires nil to be enabled.");
+        }
+        // Team must be eligible (100+ behind)
+        if (!state.teamEligibleForBlind[playerTeamId]) {
+            throw new Error(
+                "Your team is not eligible for blind nil bids (must be 100+ points behind)."
+            );
+        }
+        // Must be marked as blind
+        if (!bid.isBlind) {
+            throw new Error("Blind nil bid must be marked as blind.");
+        }
+    } else if (bid.type === "blind") {
+        // Blind bids must have minimum amount of 4
+        if (bid.amount < 4) {
+            throw new Error("Blind bids must be at least 4 tricks.");
+        }
+        // Blind bids must be enabled in settings
+        if (!state.settings.blindBidEnabled) {
+            throw new Error("Blind bids are not allowed in this game.");
+        }
+        // Team must be eligible (100+ behind)
+        if (!state.teamEligibleForBlind[playerTeamId]) {
+            throw new Error(
+                "Your team is not eligible for blind bids (must be 100+ points behind)."
+            );
+        }
+        // Must be marked as blind
+        if (!bid.isBlind) {
+            throw new Error("Blind bid must be marked as blind.");
+        }
+    } else if (bid.type === "normal") {
+        // Normal bids must have amount > 0 (zero bids must use nil type)
+        if (bid.amount === 0) {
+            throw new Error(
+                "Normal bids must be at least 1 trick. Use Nil bid for zero tricks."
+            );
+        }
+        // Normal bids should not be marked as blind
+        if (bid.isBlind) {
+            throw new Error("Normal bids cannot be marked as blind.");
+        }
+    } else {
+        throw new Error(`Invalid bid type: ${bid.type}`);
+    }
+
     // Prevent duplicate bids
     if (state.bids[playerId]) {
         throw new Error("Player has already placed a bid.");
@@ -316,6 +449,8 @@ function handlePlaceBid(
         bids: newBids,
         currentTurnIndex: nextPlayerIndex(state),
         phase: allBid ? "playing" : state.phase,
+        // Reset turn timer for next player
+        turnStartedAt: new Date().toISOString(),
     };
 }
 
@@ -334,7 +469,12 @@ function handlePlayCard(
         throw new Error("Not your turn to play a card.");
     }
 
-    // 3. Validate card is in hand
+    // 3. Check if player is connected
+    if (state.players[playerId]?.isConnected === false) {
+        throw new Error("Player is disconnected and cannot play a card.");
+    }
+
+    // 4. Validate card is in hand
     const playerHand = state.hands[playerId] || [];
     const cardIdx = playerHand.findIndex(
         (c) => c.suit === card.suit && c.rank === card.rank
@@ -343,7 +483,7 @@ function handlePlayCard(
         throw new Error("Card not in player's hand.");
     }
 
-    // 4. Validate play is legal (follow suit, spades broken, etc.)
+    // 5. Validate play is legal (follow suit, spades broken, etc.)
     const trick = state.currentTrick || {
         leaderId: playerId,
         plays: [],
@@ -355,12 +495,12 @@ function handlePlayCard(
         );
     }
 
-    // 5. Remove card from hand
+    // 6. Remove card from hand
     const newHand = [...playerHand];
     newHand.splice(cardIdx, 1);
     const newHands = { ...state.hands, [playerId]: newHand };
 
-    // 6. Add play to trick
+    // 7. Add play to trick
     const isFirstPlay = trick.plays.length === 0;
     const leadSuit = isFirstPlay ? card.suit : trick.leadSuit;
     const newTrick: Trick = {
@@ -369,7 +509,7 @@ function handlePlayCard(
         leadSuit: leadSuit || null,
     };
 
-    // 7. Update spadesBroken if a spade is played (and not the first trick)
+    // 8. Update spadesBroken if a spade is played (and not the first trick)
     const spadesBroken =
         state.spadesBroken ||
         (card.suit === "Spades" &&
@@ -379,16 +519,16 @@ function handlePlayCard(
                 trick.leadSuit === null
             ));
 
-    // 8. If trick is complete, resolve winner and show result
-    let newCurrentTrick: Trick | null = newTrick;
+    // 9. If trick is complete, resolve winner and show result
+    const newCurrentTrick: Trick | null = newTrick;
     let newCompletedTricks = state.completedTricks;
     let newCurrentTurnIndex = nextPlayerIndex(state);
-    let newPhase: SpadesPhases = state.phase;
+    const newPhase: SpadesPhases = state.phase;
     let lastTrickWinnerId: string | undefined = undefined;
     let lastTrickWinningCard: Card | undefined = undefined;
     if (newTrick.plays.length === state.playOrder.length) {
         // Trick complete
-        const winnerId = resolveTrick(newTrick);
+        const winnerId = resolveTrick(newTrick, state.settings);
         newCompletedTricks = [
             ...state.completedTricks,
             { ...newTrick, winnerId },
@@ -402,6 +542,18 @@ function handlePlayCard(
         newCurrentTurnIndex = state.playOrder.findIndex(
             (pid) => pid === winnerId
         );
+
+        // Calculate tricks won per player (for live display during round)
+        const roundTrickCounts: Record<string, number> = {};
+        state.playOrder.forEach((playerId) => {
+            roundTrickCounts[playerId] = 0;
+        });
+        newCompletedTricks.forEach((trick) => {
+            if (trick.winnerId) {
+                roundTrickCounts[trick.winnerId] += 1;
+            }
+        });
+
         // If all tricks complete, advance phase
         const allHandsEmpty = Object.values(newHands).every(
             (h) => h.length === 0
@@ -416,25 +568,55 @@ function handlePlayCard(
             const { teamScores } = scoreResult;
             // Use scoreResult.scoreBreakdown if available, else fallback to teamScores
             const scoreBreakdown = scoreResult.scoreBreakdown ?? {};
-            // Calculate tricks won per player
-            const roundTrickCounts: Record<string, number> = {};
-            // Initialize all players to 0
-            state.playOrder.forEach((playerId) => {
-                roundTrickCounts[playerId] = 0;
-            });
-            newCompletedTricks.forEach((trick) => {
-                if (trick.winnerId) {
-                    roundTrickCounts[trick.winnerId] += 1;
-                }
-            });
+
             // Calculate team scores for the round
             const roundTeamScores: Record<number, number> = {};
             Object.keys(teamScores).forEach((teamId) => {
-                roundTeamScores[Number(teamId)] =
-                    scoreBreakdown[teamId]?.roundScore ??
-                    teamScores[Number(teamId)];
+                const numericTeamId = Number(teamId);
+                roundTeamScores[numericTeamId] =
+                    scoreBreakdown[numericTeamId]?.roundScore ??
+                    teamScores[numericTeamId];
             });
+
+            // Check for win condition - has any team reached winTarget?
+            const winTarget = state.settings.winTarget;
+            const teamsAtOrAboveTarget = Object.entries(teamScores)
+                .filter(([, score]) => score >= winTarget)
+                .map(([teamId, score]) => ({ teamId: Number(teamId), score }));
+
+            let finalPhase: SpadesPhases = "round-summary";
+            let winnerTeamId: number | undefined = undefined;
+            let isTie: boolean | undefined = undefined;
+
+            if (teamsAtOrAboveTarget.length > 0) {
+                // At least one team has reached the win target
+                if (teamsAtOrAboveTarget.length === 1) {
+                    // Clear winner
+                    finalPhase = "finished";
+                    winnerTeamId = teamsAtOrAboveTarget[0].teamId;
+                } else {
+                    // Multiple teams at or above target - check for tie
+                    const maxScore = Math.max(
+                        ...teamsAtOrAboveTarget.map((t) => t.score)
+                    );
+                    const teamsWithMaxScore = teamsAtOrAboveTarget.filter(
+                        (t) => t.score === maxScore
+                    );
+
+                    if (teamsWithMaxScore.length === 1) {
+                        // Higher score wins
+                        finalPhase = "finished";
+                        winnerTeamId = teamsWithMaxScore[0].teamId;
+                    } else {
+                        // Exact tie - both teams have same score at or above target
+                        finalPhase = "finished";
+                        isTie = true;
+                    }
+                }
+            }
+
             // Set round summary phase and expose breakdowns
+            // Note: turnStartedAt is NOT set here - timer starts after CONTINUE_AFTER_ROUND_SUMMARY
             return {
                 ...state,
                 hands: newHands,
@@ -442,31 +624,45 @@ function handlePlayCard(
                 completedTricks: newCompletedTricks,
                 spadesBroken,
                 currentTurnIndex: newCurrentTurnIndex,
-                phase: "round-summary",
+                phase: finalPhase,
                 teams: {
                     ...state.teams,
                     ...Object.keys(teamScores).reduce(
                         (acc, teamId) => {
-                            acc[Number(teamId)] = {
-                                ...state.teams[Number(teamId)],
-                                score: teamScores[Number(teamId)],
+                            const numericTeamId = Number(teamId);
+                            const currentBags =
+                                state.teams[numericTeamId].accumulatedBags;
+                            const newBags =
+                                scoreResult.bags[numericTeamId] || 0;
+                            let updatedAccumulatedBags = currentBags + newBags;
+
+                            // If bag penalty was applied (10+ bags), reset to remainder
+                            if (updatedAccumulatedBags >= 10) {
+                                updatedAccumulatedBags =
+                                    updatedAccumulatedBags % 10;
+                            }
+
+                            acc[numericTeamId] = {
+                                ...state.teams[numericTeamId],
+                                score: teamScores[numericTeamId],
+                                accumulatedBags: updatedAccumulatedBags,
                             };
                             return acc;
                         },
                         {} as Record<number, Team>
                     ),
                 },
-                winnerTeamId: undefined,
-                isTie: undefined,
+                winnerTeamId,
+                isTie,
                 lastTrickWinnerId: undefined,
                 lastTrickWinningCard: undefined,
                 roundTrickCounts,
                 roundTeamScores,
                 roundScoreBreakdown: scoreBreakdown,
-                // totalTeamScores field deprecated
             };
         }
         // Show trick result before advancing
+        // Note: turnStartedAt is NOT set here - timer starts after CONTINUE_AFTER_TRICK_RESULT
         return {
             ...state,
             hands: newHands,
@@ -477,6 +673,7 @@ function handlePlayCard(
             phase: "trick-result",
             lastTrickWinnerId,
             lastTrickWinningCard,
+            roundTrickCounts, // Include live trick counts for display
         };
     }
 
@@ -490,6 +687,8 @@ function handlePlayCard(
         phase: newPhase,
         lastTrickWinnerId: undefined,
         lastTrickWinningCard: undefined,
+        // Reset turn timer for next player
+        turnStartedAt: new Date().toISOString(),
     };
 }
 
@@ -499,4 +698,12 @@ function logHistory(state: SpadesState, action: GameAction): void {
     state.history.push(
         `Action: ${action.type}, Player: ${action.userId}, Payload: ${JSON.stringify(action.payload)}`
     );
+}
+
+/**
+ * Check if the game has minimum players connected to continue.
+ * For Spades, all 4 players must be connected to play.
+ */
+function checkMinimumPlayers(state: SpadesState): boolean {
+    return checkAllPlayersConnected(state, SPADES_TOTAL_PLAYERS);
 }

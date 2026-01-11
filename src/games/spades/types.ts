@@ -19,19 +19,22 @@ export enum Rank {
     Jack = "J",
     Queen = "Q",
     King = "K",
+    LittleJoker = "LJ",
+    BigJoker = "BJ",
 }
 
 export interface Card {
-    rank: Rank;
-    suit: Suit;
+    readonly rank: Rank;
+    readonly suit: Suit;
 }
 
 export type SpadesPhase = "bidding" | "playing" | "scoring" | "finished";
-export type BidType = "normal" | "nil";
+export type BidType = "normal" | "nil" | "blind" | "blind-nil";
 
 export interface Bid {
-    amount: number;
-    type: BidType;
+    readonly amount: number;
+    readonly type: BidType;
+    readonly isBlind: boolean;
 }
 
 export interface PlaceBidAction {

@@ -21,4 +21,8 @@ app.use(gameRoutes);
 
 app.use(errorHandler);
 
+app.get("/", (req, res) => {
+    res.send("Welcome to the Family Game Room API!");
+});
+
 export default app;
