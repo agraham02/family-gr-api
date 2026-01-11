@@ -1,5 +1,6 @@
 import { CardPlay, Trick } from "..";
 import { Card, Suit } from "../types";
+import { SpadesSettings } from "../../../models/Settings";
 import { cardBeats } from "./card";
 
 /*─────────────────────────  FOLLOW-SUIT RULE  ──────────────────────────*/
@@ -31,12 +32,13 @@ function canLeadSuit(
 
 /*─────────────────────────  TRICK WINNER  ──────────────────────────────*/
 
-export function resolveTrick(trick: Trick): string {
+export function resolveTrick(trick: Trick, settings: SpadesSettings): string {
     const ledSuit = trick.leadSuit || trick.plays[0]?.card.suit;
     const winningPlay = trick.plays.reduce(
         (winner, play) => {
             if (!winner) return play; // first play is always the winner
-            if (cardBeats(play.card, winner.card, ledSuit)) return play;
+            if (cardBeats(play.card, winner.card, ledSuit, settings))
+                return play;
             return winner;
         },
         null as CardPlay | null

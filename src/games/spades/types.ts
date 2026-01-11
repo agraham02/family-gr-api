@@ -19,6 +19,8 @@ export enum Rank {
     Jack = "J",
     Queen = "Q",
     King = "K",
+    LittleJoker = "LJ",
+    BigJoker = "BJ",
 }
 
 export interface Card {

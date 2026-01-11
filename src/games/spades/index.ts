@@ -155,7 +155,7 @@ function init(
         ...DEFAULT_SPADES_SETTINGS,
         ...customSettings,
     };
-    const deck = buildDeck();
+    const deck = buildDeck(settings.jokersEnabled);
     const shuffledDeck = shuffleDeck(deck);
 
     return {
@@ -252,7 +252,7 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             const nextDealerIndex =
                 (state.dealerIndex + 1) % state.playOrder.length;
             // Shuffle and deal new hands
-            const deck = buildDeck();
+            const deck = buildDeck(state.settings.jokersEnabled);
             const shuffledDeck = shuffleDeck(deck);
             const newHandsForNextRound = dealCardsToPlayers(
                 shuffledDeck,
@@ -528,7 +528,7 @@ function handlePlayCard(
     let lastTrickWinningCard: Card | undefined = undefined;
     if (newTrick.plays.length === state.playOrder.length) {
         // Trick complete
-        const winnerId = resolveTrick(newTrick);
+        const winnerId = resolveTrick(newTrick, state.settings);
         newCompletedTricks = [
             ...state.completedTricks,
             { ...newTrick, winnerId },
