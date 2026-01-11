@@ -115,14 +115,19 @@ function startServer() {
                         `join_room missing roomId or userId for socket ${socket.id}`
                     );
                 }
-                const { alreadyConnected } = registerSocketUser(
-                    socket.id,
-                    roomId,
-                    userId
-                );
+                const result = registerSocketUser(socket.id, roomId, userId);
 
-                // If user already has an active connection, acknowledge but don't re-sync
-                if (alreadyConnected) {
+                // If user already has an active connection, disconnect the old socket
+                if (result.alreadyConnected && result.oldSocketId) {
+                    const oldSocket = io.sockets.sockets.get(
+                        result.oldSocketId
+                    );
+                    if (oldSocket) {
+                        console.log(
+                            `Force disconnecting old socket: ${result.oldSocketId}`
+                        );
+                        oldSocket.disconnect(true);
+                    }
                     socket.emit("already_joined", { roomId, userId });
                     return;
                 }

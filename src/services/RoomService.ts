@@ -468,7 +468,7 @@ export function registerSocketUser(
     socketId: string,
     roomId: string,
     userId: string
-): { alreadyConnected: boolean } {
+): { alreadyConnected: boolean; oldSocketId?: string } {
     // Check if the room exists first
     const room = rooms.get(roomId);
     if (!room) {
@@ -490,9 +490,10 @@ export function registerSocketUser(
             // User already has an active socket in this room - this is a duplicate
             console.log(
                 `Duplicate join detected for user ${userId} in room ${roomId}. ` +
-                    `Existing socket: ${existingSocketId}, New socket: ${socketId}`
+                    `Existing socket: ${existingSocketId}, New socket: ${socketId}. ` +
+                    `Disconnecting old socket.`
             );
-            return { alreadyConnected: true };
+            return { alreadyConnected: true, oldSocketId: existingSocketId };
         }
     }
 
