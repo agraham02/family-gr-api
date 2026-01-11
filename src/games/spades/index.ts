@@ -345,27 +345,25 @@ function handlePlaceBid(
     }
     // Validate player
     if (!state.playOrder.some((pid) => pid === playerId)) {
-        throw new Error("Invalid player ID for this game.");
+        throw new Error("You're not in this game.");
     }
     // Check if player is connected
     if (state.players[playerId]?.isConnected === false) {
-        throw new Error("Player is disconnected and cannot place a bid.");
+        throw new Error("You've been disconnected. Please refresh to rejoin.");
     }
     // Validate bid (must be a number between 0 and 13, as there are only 13 tricks possible)
     if (typeof bid.amount !== "number" || bid.amount < 0 || bid.amount > 13) {
-        throw new Error("Bid amount must be between 0 and 13.");
+        throw new Error("Bid must be between 0 and 13 tricks.");
     }
 
     // Find player's team
-    let playerTeamId: number | undefined;
-    Object.entries(state.teams).forEach(([teamId, team]) => {
-        if (team.players.includes(playerId)) {
-            playerTeamId = Number(teamId);
-        }
-    });
+    const playerTeam = Object.entries(state.teams).find(([_, team]) =>
+        team.players.includes(playerId)
+    );
+    const playerTeamId = playerTeam ? Number(playerTeam[0]) : undefined;
 
     if (playerTeamId === undefined) {
-        throw new Error("Player is not on a team.");
+        throw new Error("You're not on a team.");
     }
 
     // Validate bid type
@@ -637,9 +635,9 @@ function handlePlayCard(
                             let updatedAccumulatedBags = currentBags + newBags;
 
                             // If bag penalty was applied (10+ bags), reset to remainder
-                            if (scoreBreakdown[numericTeamId]?.bagPenalty > 0) {
+                            if (updatedAccumulatedBags >= 10) {
                                 updatedAccumulatedBags =
-                                    updatedAccumulatedBags - 10;
+                                    updatedAccumulatedBags % 10;
                             }
 
                             acc[numericTeamId] = {

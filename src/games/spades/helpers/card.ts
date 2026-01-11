@@ -59,7 +59,8 @@ export function buildDeck(jokersEnabled: boolean = false): Card[] {
         }
     }
 
-    // Add jokers (treated as spades for suit purposes)
+    // Jokers are treated as the highest-ranking spades.
+    // They must follow suit rules like any other spade.
     cards.push({ rank: Rank.LittleJoker, suit: Suit.Spades });
     cards.push({ rank: Rank.BigJoker, suit: Suit.Spades });
 
