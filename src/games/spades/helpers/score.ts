@@ -11,6 +11,10 @@ interface TeamScoreBreakdown {
     bagPenalty: number; // -100 if accumulated 10+ bags
     nilBonus: number; // +100 per successful nil
     nilPenalty: number; // -100 per failed nil
+    blindBonus: number; // Extra points from successful blind bid (2x normal)
+    blindPenalty: number; // Extra penalty from failed blind bid (2x normal)
+    blindNilBonus: number; // +200 for successful blind nil
+    blindNilPenalty: number; // -200 for failed blind nil
     roundScore: number; // total points gained/lost this round
     newScore: number; // final score after round
 }
@@ -62,6 +66,10 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
             bagPenalty: 0,
             nilBonus: 0,
             nilPenalty: 0,
+            blindBonus: 0,
+            blindPenalty: 0,
+            blindNilBonus: 0,
+            blindNilPenalty: 0,
             roundScore: 0,
             newScore: team.score,
         };
@@ -75,14 +83,14 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
         }
     });
 
-    // Process nil bids first
+    // Process nil and blind-nil bids first
     Object.entries(bids).forEach(([playerId, bid]: [string, Bid]) => {
         const teamId = playerTeam[playerId];
-        if (bid.type === "nil") {
-            const playerTricks = completedTricks.filter(
-                (trick) => trick.winnerId === playerId
-            ).length;
+        const playerTricks = completedTricks.filter(
+            (trick) => trick.winnerId === playerId
+        ).length;
 
+        if (bid.type === "nil") {
             if (playerTricks === 0) {
                 // Successful nil: +100 points
                 scoreBreakdown[teamId].nilBonus += 100;
@@ -91,6 +99,18 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
                 scoreBreakdown[teamId].nilPenalty += 100;
                 nilSuccess[teamId] = false;
             }
+        } else if (bid.type === "blind-nil") {
+            if (playerTricks === 0) {
+                // Successful blind nil: +200 points
+                scoreBreakdown[teamId].blindNilBonus += 200;
+            } else {
+                // Failed blind nil: -200 points
+                scoreBreakdown[teamId].blindNilPenalty += 200;
+                nilSuccess[teamId] = false;
+            }
+        } else if (bid.type === "blind") {
+            // Blind bids (non-nil) - add to team total (will be scored at 2x)
+            teamBids[teamId] += bid.amount;
         } else {
             // Regular bid - add to team total
             teamBids[teamId] += bid.amount;
@@ -104,7 +124,7 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
         scoreBreakdown[teamId].tricksWon = tricksWon[teamId];
     });
 
-    // Score regular bids
+    // Score regular and blind bids
     const teamBags: Record<number, number> = {};
     Object.keys(teams).forEach((teamIdStr) => {
         const teamId = Number(teamIdStr);
@@ -112,27 +132,43 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
         const tricks = tricksWon[teamId];
         teamBags[teamId] = 0;
 
+        // Check if any player on this team made a blind bid (non-nil)
+        const hasBlindBid = teams[teamId].players.some(
+            (pid) => bids[pid]?.type === "blind"
+        );
+
         if (bid > 0) {
             if (tricks >= bid) {
                 // Made bid
-                scoreBreakdown[teamId].basePoints = bid * 10;
+                const basePoints = bid * 10;
+                scoreBreakdown[teamId].basePoints = basePoints;
+
+                // If blind bid, add 2x bonus
+                if (hasBlindBid) {
+                    scoreBreakdown[teamId].blindBonus = basePoints; // Extra 1x for 2x total
+                }
+
                 const bags = tricks - bid;
                 scoreBreakdown[teamId].bags = bags;
                 scoreBreakdown[teamId].bagPoints = bags; // +1 per bag
                 teamBags[teamId] = bags;
             } else {
                 // Failed bid
-                scoreBreakdown[teamId].basePoints = -(bid * 10);
+                const basePoints = -(bid * 10);
+                scoreBreakdown[teamId].basePoints = basePoints;
+
+                // If blind bid, add 2x penalty
+                if (hasBlindBid) {
+                    scoreBreakdown[teamId].blindPenalty = -basePoints; // Extra 1x for 2x total
+                }
             }
         }
 
-        // Check for bag penalty (10+ accumulated bags)
-        // Note: We need to track accumulated bags across rounds
-        // For now, we apply penalty if this round's bags push us over 10
-        // This is simplified - ideally we'd track cumulative bags in game state
-        if (teamBags[teamId] >= 10) {
+        // Track cumulative bags and apply penalty
+        const currentBags = teams[teamId].accumulatedBags + teamBags[teamId];
+        if (currentBags >= 10) {
             scoreBreakdown[teamId].bagPenalty = Math.abs(settings.bagsPenalty);
-            teamBags[teamId] -= 10;
+            // Note: The actual bag reset will happen when we update team state
         }
     });
 
@@ -146,7 +182,11 @@ export function calculateSpadesScores(state: SpadesState): ScoreResult {
             breakdown.basePoints +
             breakdown.bagPoints +
             breakdown.nilBonus -
-            breakdown.nilPenalty -
+            breakdown.nilPenalty +
+            breakdown.blindBonus -
+            breakdown.blindPenalty +
+            breakdown.blindNilBonus -
+            breakdown.blindNilPenalty -
             breakdown.bagPenalty;
 
         breakdown.newScore = breakdown.previousScore + breakdown.roundScore;

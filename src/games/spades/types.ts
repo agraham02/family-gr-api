@@ -27,11 +27,12 @@ export interface Card {
 }
 
 export type SpadesPhase = "bidding" | "playing" | "scoring" | "finished";
-export type BidType = "normal" | "nil";
+export type BidType = "normal" | "nil" | "blind" | "blind-nil";
 
 export interface Bid {
     amount: number;
     type: BidType;
+    isBlind: boolean;
 }
 
 export interface PlaceBidAction {

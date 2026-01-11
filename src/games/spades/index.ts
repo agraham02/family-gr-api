@@ -69,6 +69,7 @@ export type { SpadesSettings } from "../../models/Settings";
 interface Team {
     players: string[];
     score: number;
+    accumulatedBags: number;
     nil?: boolean;
 }
 
@@ -118,6 +119,7 @@ export interface SpadesState extends GameState {
     roundTrickCounts: Record<string, number>;
     roundTeamScores: Record<number, number>; // scores for each team for the round.
     roundScoreBreakdown: Record<number, any>; // detailed breakdown for each team (e.g., bags, nil, bonuses, penalties).
+    teamEligibleForBlind: Record<number, boolean>; // which teams are eligible for blind bids (100+ behind)
 
     /** ISO timestamp when the current turn started (for turn timer) */
     turnStartedAt?: string;
@@ -134,7 +136,7 @@ function init(
     const teams: Record<number, Team> = Object.fromEntries(
         room.teams?.map((team, index) => [
             index,
-            { players: team, score: 0 },
+            { players: team, score: 0, accumulatedBags: 0 },
         ]) || []
     );
 
@@ -182,10 +184,32 @@ function init(
         roundTrickCounts: {},
         roundTeamScores: {},
         roundScoreBreakdown: {},
+        teamEligibleForBlind: {}, // Will be calculated at round start
 
         // Initialize turn timer
         turnStartedAt: new Date().toISOString(),
     };
+}
+
+/**
+ * Calculate which teams are eligible for blind bids (100+ points behind leader)
+ */
+function calculateTeamEligibility(
+    teams: Record<number, Team>
+): Record<number, boolean> {
+    const teamScores = Object.entries(teams).map(([teamId, team]) => ({
+        teamId: Number(teamId),
+        score: team.score,
+    }));
+
+    const maxScore = Math.max(...teamScores.map((t) => t.score), 0);
+
+    const eligibility: Record<number, boolean> = {};
+    teamScores.forEach(({ teamId, score }) => {
+        eligibility[teamId] = maxScore - score >= 100;
+    });
+
+    return eligibility;
 }
 
 function reducer(state: SpadesState, action: GameAction): SpadesState {
@@ -234,6 +258,9 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 shuffledDeck,
                 state.players
             );
+            // Calculate team eligibility for blind bids (100+ points behind)
+            const teamEligibleForBlind = calculateTeamEligibility(state.teams);
+
             // Reset bids, tricks, spadesBroken, etc.
             return {
                 ...state,
@@ -253,6 +280,7 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
                 roundTrickCounts: {},
                 roundTeamScores: {},
                 roundScoreBreakdown: {},
+                teamEligibleForBlind,
                 turnStartedAt: new Date().toISOString(),
             };
         }
@@ -327,6 +355,85 @@ function handlePlaceBid(
     if (typeof bid.amount !== "number" || bid.amount < 0 || bid.amount > 13) {
         throw new Error("Bid amount must be between 0 and 13.");
     }
+
+    // Find player's team
+    let playerTeamId: number | undefined;
+    Object.entries(state.teams).forEach(([teamId, team]) => {
+        if (team.players.includes(playerId)) {
+            playerTeamId = Number(teamId);
+        }
+    });
+
+    if (playerTeamId === undefined) {
+        throw new Error("Player is not on a team.");
+    }
+
+    // Validate bid type
+    if (bid.type === "nil") {
+        // Nil bids must have amount of 0
+        if (bid.amount !== 0) {
+            throw new Error("Nil bid must have amount of 0.");
+        }
+        // Nil must be enabled in settings
+        if (!state.settings.allowNil) {
+            throw new Error("Nil bids are not allowed in this game.");
+        }
+        // Nil cannot be blind (that's blind-nil)
+        if (bid.isBlind) {
+            throw new Error("Use blind-nil bid type for blind nil bids.");
+        }
+    } else if (bid.type === "blind-nil") {
+        // Blind nil bids must have amount of 0
+        if (bid.amount !== 0) {
+            throw new Error("Blind nil bid must have amount of 0.");
+        }
+        // Blind nil must be enabled in settings
+        if (!state.settings.blindNilEnabled) {
+            throw new Error("Blind nil bids are not allowed in this game.");
+        }
+        // Blind nil requires allowNil as well
+        if (!state.settings.allowNil) {
+            throw new Error("Blind nil requires nil to be enabled.");
+        }
+        // Team must be eligible (100+ behind)
+        if (!state.teamEligibleForBlind[playerTeamId]) {
+            throw new Error(
+                "Your team is not eligible for blind nil bids (must be 100+ points behind)."
+            );
+        }
+        // Must be marked as blind
+        if (!bid.isBlind) {
+            throw new Error("Blind nil bid must be marked as blind.");
+        }
+    } else if (bid.type === "blind") {
+        // Blind bids must have minimum amount of 4
+        if (bid.amount < 4) {
+            throw new Error("Blind bids must be at least 4 tricks.");
+        }
+        // Blind bids must be enabled in settings
+        if (!state.settings.blindBidEnabled) {
+            throw new Error("Blind bids are not allowed in this game.");
+        }
+        // Team must be eligible (100+ behind)
+        if (!state.teamEligibleForBlind[playerTeamId]) {
+            throw new Error(
+                "Your team is not eligible for blind bids (must be 100+ points behind)."
+            );
+        }
+        // Must be marked as blind
+        if (!bid.isBlind) {
+            throw new Error("Blind bid must be marked as blind.");
+        }
+    } else if (bid.type === "normal") {
+        // Normal bids are always allowed (no special validation)
+        // Normal bids should not be marked as blind
+        if (bid.isBlind) {
+            throw new Error("Normal bids cannot be marked as blind.");
+        }
+    } else {
+        throw new Error(`Invalid bid type: ${bid.type}`);
+    }
+
     // Prevent duplicate bids
     if (state.bids[playerId]) {
         throw new Error("Player has already placed a bid.");
@@ -435,6 +542,18 @@ function handlePlayCard(
         newCurrentTurnIndex = state.playOrder.findIndex(
             (pid) => pid === winnerId
         );
+
+        // Calculate tricks won per player (for live display during round)
+        const roundTrickCounts: Record<string, number> = {};
+        state.playOrder.forEach((playerId) => {
+            roundTrickCounts[playerId] = 0;
+        });
+        newCompletedTricks.forEach((trick) => {
+            if (trick.winnerId) {
+                roundTrickCounts[trick.winnerId] += 1;
+            }
+        });
+
         // If all tricks complete, advance phase
         const allHandsEmpty = Object.values(newHands).every(
             (h) => h.length === 0
@@ -449,17 +568,7 @@ function handlePlayCard(
             const { teamScores } = scoreResult;
             // Use scoreResult.scoreBreakdown if available, else fallback to teamScores
             const scoreBreakdown = scoreResult.scoreBreakdown ?? {};
-            // Calculate tricks won per player
-            const roundTrickCounts: Record<string, number> = {};
-            // Initialize all players to 0
-            state.playOrder.forEach((playerId) => {
-                roundTrickCounts[playerId] = 0;
-            });
-            newCompletedTricks.forEach((trick) => {
-                if (trick.winnerId) {
-                    roundTrickCounts[trick.winnerId] += 1;
-                }
-            });
+
             // Calculate team scores for the round
             const roundTeamScores: Record<number, number> = {};
             Object.keys(teamScores).forEach((teamId) => {
@@ -520,9 +629,23 @@ function handlePlayCard(
                     ...state.teams,
                     ...Object.keys(teamScores).reduce(
                         (acc, teamId) => {
-                            acc[Number(teamId)] = {
-                                ...state.teams[Number(teamId)],
-                                score: teamScores[Number(teamId)],
+                            const numericTeamId = Number(teamId);
+                            const currentBags =
+                                state.teams[numericTeamId].accumulatedBags;
+                            const newBags =
+                                scoreResult.bags[numericTeamId] || 0;
+                            let updatedAccumulatedBags = currentBags + newBags;
+
+                            // If bag penalty was applied (10+ bags), reset to remainder
+                            if (scoreBreakdown[numericTeamId]?.bagPenalty > 0) {
+                                updatedAccumulatedBags =
+                                    updatedAccumulatedBags - 10;
+                            }
+
+                            acc[numericTeamId] = {
+                                ...state.teams[numericTeamId],
+                                score: teamScores[numericTeamId],
+                                accumulatedBags: updatedAccumulatedBags,
                             };
                             return acc;
                         },
@@ -550,6 +673,7 @@ function handlePlayCard(
             phase: "trick-result",
             lastTrickWinnerId,
             lastTrickWinningCard,
+            roundTrickCounts, // Include live trick counts for display
         };
     }
 
