@@ -99,3 +99,26 @@ export async function requestJoinRoom(
         next(err);
     }
 }
+
+export async function getRoomIdByCode(
+    req: Request,
+    res: Response,
+    next: NextFunction
+) {
+    try {
+        const { roomCode } = req.params;
+        if (!roomCode) {
+            throw badRequest("roomCode is required.");
+        }
+
+        const roomId = RoomService.getRoomIdByCode(roomCode);
+        if (!roomId) {
+            res.status(404).json({ error: "Room not found." });
+            return;
+        }
+
+        res.status(200).json({ roomId });
+    } catch (err) {
+        next(err);
+    }
+}

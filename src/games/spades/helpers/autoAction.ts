@@ -25,6 +25,7 @@ export function getAutoBid(state: SpadesState, playerId: string): Bid {
     return {
         amount: nilAllowed ? 0 : 1,
         type: nilAllowed ? "nil" : "normal",
+        isBlind: false,
     };
 }
 
