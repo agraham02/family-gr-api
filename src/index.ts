@@ -129,7 +129,7 @@ function startServer() {
                         oldSocket.disconnect(true);
                     }
                     socket.emit("already_joined", { roomId, userId });
-                    return;
+                    // Don't return - still need to join room and sync state below
                 }
 
                 socket.join(roomId);

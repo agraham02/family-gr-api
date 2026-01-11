@@ -170,7 +170,7 @@ function init(
         dealerIndex,
         currentTurnIndex: dealerIndex,
 
-        hands: dealCardsToPlayers(shuffledDeck, players),
+        hands: dealCardsToPlayers(shuffledDeck, players, settings),
         bids: {},
 
         spadesBroken: false,
@@ -256,7 +256,8 @@ function reducer(state: SpadesState, action: GameAction): SpadesState {
             const shuffledDeck = shuffleDeck(deck);
             const newHandsForNextRound = dealCardsToPlayers(
                 shuffledDeck,
-                state.players
+                state.players,
+                state.settings
             );
             // Calculate team eligibility for blind bids (100+ points behind)
             const teamEligibleForBlind = calculateTeamEligibility(state.teams);
@@ -423,7 +424,12 @@ function handlePlaceBid(
             throw new Error("Blind bid must be marked as blind.");
         }
     } else if (bid.type === "normal") {
-        // Normal bids are always allowed (no special validation)
+        // Normal bids must have amount > 0 (zero bids must use nil type)
+        if (bid.amount === 0) {
+            throw new Error(
+                "Normal bids must be at least 1 trick. Use Nil bid for zero tricks."
+            );
+        }
         // Normal bids should not be marked as blind
         if (bid.isBlind) {
             throw new Error("Normal bids cannot be marked as blind.");

@@ -83,7 +83,8 @@ export function shuffleDeck(
  */
 export function dealCardsToPlayers(
     deck: Card[],
-    seats: GamePlayers
+    seats: GamePlayers,
+    settings?: SpadesSettings
 ): Record<string, Card[]> {
     const seatIds = Object.keys(seats);
     if (seatIds.length !== 4) throw new Error("Spades needs 4 players");
@@ -103,16 +104,30 @@ export function dealCardsToPlayers(
 
     // Sort each hand for consistent ordering
     for (const seatId of seatIds) {
-        hands[seatId] = sortHand(hands[seatId]);
+        hands[seatId] = sortHand(hands[seatId], settings);
     }
 
     return hands;
 }
 
-function sortHand(hand: Card[]): Card[] {
+/**
+ * Sort a hand by suit (Spades > Hearts > Clubs > Diamonds) then by rank.
+ * When settings are provided, jokers and 2♠ high are sorted correctly.
+ */
+function sortHand(hand: Card[], settings?: SpadesSettings): Card[] {
     return hand.slice().sort((a, b) => {
+        // First sort by suit
         const suitComparison = SUITS.indexOf(b.suit) - SUITS.indexOf(a.suit);
         if (suitComparison !== 0) return suitComparison;
+
+        // Then sort by rank within the same suit
+        if (settings) {
+            // Use settings-aware rank values (handles jokers and 2♠ high)
+            return (
+                getCardRankValue(a, settings) - getCardRankValue(b, settings)
+            );
+        }
+        // Fallback to basic rank order
         return RANK_ORDER.indexOf(a.rank) - RANK_ORDER.indexOf(b.rank);
     });
 }
