@@ -23,7 +23,7 @@ Add the classic dice game **Left Right Center** to the game room with a betting/
 
 ---
 
-## 2. Game Settings System
+## 2. Game Settings System (done)
 
 Improve and enforce the game settings infrastructure across all games.
 
@@ -73,7 +73,7 @@ Improve and enforce the game settings infrastructure across all games.
 
 ---
 
-## 3. Spades Improvements
+## 3. Spades Improvements (done)
 
 Ensure Spades is fully functional with proper logic, UI, and UX for all gameplay phases.
 
